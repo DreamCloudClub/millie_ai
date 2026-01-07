@@ -543,10 +543,10 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
     final opacity = _speaking ? 1.0 : 0.8;
     
-    // Border radius - pill when closed, rounded rect when open
+    // Border radius - pill when closed, nicely rounded when open (like eyes)
     final openProgress = shouldExpand ? ((targetHeight - closedHeight) / (maxHeight - closedHeight)).clamp(0.0, 1.0) : 0.0;
-    final topRadius = closedHeight / 2;
-    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * openProgress;
+    final topRadius = closedHeight / 2 + (20 - closedHeight / 2) * openProgress;  // Grows to 20
+    final bottomRadius = closedHeight / 2 + (20 - closedHeight / 2) * openProgress;  // Grows to 20
 
     return Opacity(
       opacity: opacity,
