@@ -1065,24 +1065,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    // Logo (centered area)
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: AppColors.accent.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(AppRadius.small),
-                        border: Border.all(color: AppColors.accent, width: 2),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(AppRadius.small - 2),
-                        child: Image.asset(
-                          'assets/icon/logo.png',
-                          fit: BoxFit.contain,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
                     // Edit button
                     _buildDetailActionButton(
                       label: 'Edit',
