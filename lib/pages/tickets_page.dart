@@ -998,53 +998,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                 ),
               ),
             ),
-            
-            // Bottom control bar
-            Container(
-              margin: const EdgeInsets.only(
-                left: AppSpacing.lg,
-                right: AppSpacing.lg,
-                bottom: AppSpacing.lg,
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
-                vertical: AppSpacing.md,
-              ),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2A2A2A),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.4),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildControlButton(
-                    icon: Icons.refresh,
-                    label: 'Refresh',
-                    onTap: widget.onRefresh ?? () {},
-                    color: AppColors.success,
-                  ),
-                  _buildControlButton(
-                    icon: Icons.pause,
-                    label: 'Pause',
-                    onTap: widget.onPause ?? () {},
-                    color: AppColors.accent,
-                  ),
-                  _buildControlButton(
-                    icon: Icons.close,
-                    label: 'Exit',
-                    onTap: widget.onExit ?? widget.onBack,
-                    color: AppColors.dangerBright,
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
       ),
