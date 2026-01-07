@@ -653,6 +653,22 @@ class _LocationsPageState extends State<LocationsPage> {
   
   Widget _buildTabButton(String label, LeftPanelTab tab, {bool compact = false}) {
     final isActive = _leftTab == tab;
+    
+    // Tab-specific colors: Points=green, Actions=orange, others=blue
+    Color tabColor;
+    switch (tab) {
+      case LeftPanelTab.points:
+        tabColor = AppColors.success; // Green
+        break;
+      case LeftPanelTab.actions:
+        tabColor = AppColors.dangerBright; // Orange
+        break;
+      case LeftPanelTab.displays:
+      case LeftPanelTab.tasks:
+        tabColor = AppColors.accent; // Blue
+        break;
+    }
+    
     return GestureDetector(
       onTap: () => setState(() => _leftTab = tab),
       child: Container(
@@ -661,17 +677,17 @@ class _LocationsPageState extends State<LocationsPage> {
           vertical: compact ? AppSpacing.sm : AppSpacing.sm,
         ),
         decoration: BoxDecoration(
-          color: isActive ? AppColors.accent.withOpacity(0.15) : AppColors.surface,
+          color: isActive ? tabColor.withOpacity(0.15) : AppColors.surface,
           borderRadius: BorderRadius.circular(AppRadius.small),
           border: Border.all(
-            color: isActive ? AppColors.accent : AppColors.border,
+            color: isActive ? tabColor : AppColors.border,
           ),
         ),
         child: Center(
           child: Text(
             label,
             style: TextStyle(
-              color: isActive ? AppColors.accent : AppColors.textMuted,
+              color: isActive ? tabColor : AppColors.textMuted,
               fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
               fontSize: compact ? 13 : 14,
             ),
