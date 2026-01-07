@@ -530,7 +530,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     const closedHeight = 16.0;
     const maxHeight = 200.0;
     const itemHeight = 32.0;
-    const paddingHeight = 32.0;
+    const paddingHeight = 40.0;  // Match actual padding: 16 top + 24 bottom
     
     // Simple: expand only when items exist
     final hasItems = _orderItems.isNotEmpty;
@@ -581,7 +581,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildTicketContent() {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),  // Balanced padding
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),  // 16 top, 24 bottom
         child: Column(
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
