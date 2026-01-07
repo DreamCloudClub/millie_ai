@@ -819,61 +819,65 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
               ),
               child: Column(
                 children: [
-                  // Row 1: Title + Search + Refresh
+                  // Row 1: Title + Search (centered) + Refresh
                   Row(
                     children: [
-                      // Title
-                      const Text(
-                        'AI Tickets',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                      // Title with padding to align with toggle below
+                      const Padding(
+                        padding: EdgeInsets.only(left: AppSpacing.xs),
+                        child: Text(
+                          'AI Tickets',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: AppSpacing.md),
-                      // Search field
-                      Expanded(
-                        child: Container(
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: AppColors.surface,
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(color: AppColors.border),
-                          ),
-                          child: Row(
-                            children: [
-                              const SizedBox(width: AppSpacing.sm),
-                              Icon(Icons.search, color: AppColors.textMuted, size: 18),
-                              const SizedBox(width: AppSpacing.xs),
-                              Expanded(
-                                child: TextField(
-                                  controller: _searchController,
-                                  focusNode: _searchFocusNode,
-                                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                                  decoration: InputDecoration(
-                                    hintText: 'Search...',
-                                    hintStyle: TextStyle(color: AppColors.textMuted),
-                                    border: InputBorder.none,
-                                    isCollapsed: true,
-                                    contentPadding: EdgeInsets.zero,
-                                  ),
+                      // Spacer to push search to center
+                      const Spacer(),
+                      // Search field (narrower, centered)
+                      Container(
+                        width: 200,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: AppColors.border),
+                        ),
+                        child: Row(
+                          children: [
+                            const SizedBox(width: AppSpacing.sm),
+                            Icon(Icons.search, color: AppColors.textMuted, size: 18),
+                            const SizedBox(width: AppSpacing.xs),
+                            Expanded(
+                              child: TextField(
+                                controller: _searchController,
+                                focusNode: _searchFocusNode,
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                decoration: InputDecoration(
+                                  hintText: 'Search...',
+                                  hintStyle: TextStyle(color: AppColors.textMuted),
+                                  border: InputBorder.none,
+                                  isCollapsed: true,
+                                  contentPadding: EdgeInsets.zero,
                                 ),
                               ),
-                              if (_searchQuery.isNotEmpty)
-                                GestureDetector(
-                                  onTap: _clearSearch,
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
-                                    child: Icon(Icons.close, color: AppColors.textMuted, size: 18),
-                                  ),
+                            ),
+                            if (_searchQuery.isNotEmpty)
+                              GestureDetector(
+                                onTap: _clearSearch,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+                                  child: Icon(Icons.close, color: AppColors.textMuted, size: 18),
                                 ),
-                              const SizedBox(width: AppSpacing.sm),
-                            ],
-                          ),
+                              ),
+                            const SizedBox(width: AppSpacing.sm),
+                          ],
                         ),
                       ),
-                      const SizedBox(width: AppSpacing.sm),
+                      // Spacer to balance
+                      const Spacer(),
                       // Refresh button
                       GestureDetector(
                         onTap: clearAllTickets,
