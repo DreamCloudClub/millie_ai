@@ -580,7 +580,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   
   Widget _buildTicketContent() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(40, 16, 16, 24),  // 40 left padding
+      padding: const EdgeInsets.fromLTRB(80, 16, 16, 24),  // 80 left padding
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,  // Left align
