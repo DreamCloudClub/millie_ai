@@ -809,20 +809,21 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   Widget build(BuildContext context) {
     super.build(context);
     
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Consolidated top bar (dashboard style)
-            Container(
-              margin: const EdgeInsets.all(AppSpacing.sm),
-              padding: const EdgeInsets.all(AppSpacing.md),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.medium),
-                border: Border.all(color: AppColors.border),
-              ),
+    return Container(
+      color: AppColors.surface,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          child: Column(
+            children: [
+              // Top bar card (dashboard style)
+              Container(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(AppRadius.medium),
+                  border: Border.all(color: AppColors.border),
+                ),
               child: Column(
                 children: [
                   // Row 1: Title + Search + Refresh
@@ -843,7 +844,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                         child: Container(
                           height: 36,
                           decoration: BoxDecoration(
-                            color: AppColors.background,
+                            color: AppColors.surface,
                             borderRadius: BorderRadius.circular(18),
                             border: Border.all(color: AppColors.border),
                           ),
@@ -899,7 +900,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                   Container(
                     padding: const EdgeInsets.all(3),
                     decoration: BoxDecoration(
-                      color: AppColors.background,
+                      color: AppColors.surface,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Row(
@@ -965,22 +966,18 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
               ),
             ),
             
-            const SizedBox(height: AppSpacing.xs),
+            const SizedBox(height: AppSpacing.sm),
             
-            // Tickets list in bordered container
+            // Tickets list card (dashboard style)
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.15),
-                      width: 1,
-                    ),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(15),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(AppRadius.medium),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(AppRadius.medium - 1),
                     child: _isLoading
                         ? const Center(
                             child: CircularProgressIndicator(color: Colors.white),
@@ -1004,25 +1001,25 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                                       );
                                     },
                                   ),
-                  ),
                 ),
               ),
             ),
             
-            // Status text - always visible
+            // Status text
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
               child: Text(
                 '${_tickets.length} tickets',
                 style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.white.withOpacity(0.5),
+                  fontSize: 12,
+                  color: AppColors.textMuted,
                 ),
               ),
             ),
           ],
         ),
       ),
+    ),
     );
   }
 
