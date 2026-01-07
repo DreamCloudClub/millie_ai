@@ -979,7 +979,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                             : _filteredTickets.isEmpty && _searchQuery.isNotEmpty
                                 ? _buildSearchEmptyState()
                                 : ListView.builder(
-                                    padding: const EdgeInsets.all(AppSpacing.md),
+                                    padding: EdgeInsets.zero,
                                     itemCount: _filteredTickets.length,
                                     itemBuilder: (context, index) {
                                       final ticket = _filteredTickets[index];
