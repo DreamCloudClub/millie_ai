@@ -530,9 +530,12 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     const closedHeight = 16.0;
     const openHeight = 200.0;  // Height when ticket is showing
     
-    // Use thought animation for mouth expansion
-    final animValue = Curves.easeOutBack.transform(_thoughtCtrl.value);
-    final currentHeight = closedHeight + (openHeight - closedHeight) * animValue;
+    // Only expand when we have items (spring animation with overshoot)
+    final shouldExpand = _showThought && _orderItems.isNotEmpty;
+    final animValue = shouldExpand 
+        ? Curves.elasticOut.transform(_thoughtCtrl.value.clamp(0.0, 1.0))
+        : 0.0;
+    final currentHeight = closedHeight + (openHeight - closedHeight) * animValue.clamp(0.0, 1.0);
     
     // Glow intensity based on speaking state
     final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
@@ -540,24 +543,21 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     
     // Border radius - pill when closed, rounded rect when open
     final topRadius = closedHeight / 2;
-    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * animValue;
+    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * animValue.clamp(0.0, 1.0);
 
     return Opacity(
       opacity: opacity,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 100),
+        duration: const Duration(milliseconds: 400),
+        curve: shouldExpand ? Curves.elasticOut : Curves.easeInBack,
         width: mouthWidth,
         height: currentHeight,
         decoration: BoxDecoration(
-          color: _showThought ? const Color(0xFF1A1A1A) : Colors.white,
+          color: Colors.white,  // Always white background
           borderRadius: BorderRadius.vertical(
             top: Radius.circular(topRadius),
             bottom: Radius.circular(bottomRadius),
           ),
-          border: _showThought ? Border.all(
-            color: Colors.white.withOpacity(0.8),
-            width: 2,
-          ) : null,
           boxShadow: [
             BoxShadow(
               color: Colors.white.withOpacity(glowIntensity),
@@ -566,7 +566,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
             ),
           ],
         ),
-        child: _showThought && _orderItems.isNotEmpty
+        child: shouldExpand
             ? ClipRRect(
                 borderRadius: BorderRadius.vertical(
                   top: Radius.circular(topRadius - 2),
@@ -589,7 +589,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
           child: Text(
             _orderItems[index],
             style: const TextStyle(
-              color: Colors.white,
+              color: Colors.black,
               fontSize: 16,
               fontWeight: FontWeight.w500,
             ),
