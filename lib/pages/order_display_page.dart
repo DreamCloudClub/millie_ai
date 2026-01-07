@@ -580,64 +580,23 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   }
   
   Widget _buildTicketContent() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Column(
-        children: [
-          // Ticket header
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(
-                  color: Colors.green,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              const Text(
-                'ORDER',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          // Divider line
-          Container(
-            height: 1,
-            color: Colors.white.withOpacity(0.3),
-          ),
-          const SizedBox(height: 6),
-          // Scrollable items list
-          Expanded(
-            child: ListView.builder(
-              padding: EdgeInsets.zero,
-              itemCount: _orderItems.length,
-              itemBuilder: (context, index) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text(
-                    _orderItems[index],
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                );
-              },
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      itemCount: _orderItems.length,
+      itemBuilder: (context, index) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Text(
+            _orderItems[index],
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
             ),
+            textAlign: TextAlign.center,
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
