@@ -709,15 +709,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
     
     // Track navigation target for location service
     LocationService.instance.setNavigatingTo(locationName);
-    
-    // Show confirmation
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Delivering "${ticket.title}" to $locationName...'),
-        backgroundColor: AppColors.success,
-        duration: const Duration(seconds: 3),
-      ),
-    );
   }
 
   void _deleteTicket(Ticket ticket) {
