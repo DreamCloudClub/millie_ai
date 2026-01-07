@@ -297,7 +297,7 @@ class _RobotSectionState extends State<_RobotSection> {
     if (mounted) {
       setState(() => _loading = false);
       _showSnackBar(result.success ? 'Robot stopped' : 'Failed: ${result.message}',
-          result.success ? AppColors.warning : AppColors.danger);
+          AppColors.danger);
       await _refresh();
     }
   }
