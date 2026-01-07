@@ -11,15 +11,12 @@ class OrderDisplayPage extends StatefulWidget {
   final VoidCallback? onPause;
   final VoidCallback? onPlay;
   final VoidCallback? onRefresh;
-  final VoidCallback? onTickets;  // Navigate to tickets page
-  
   const OrderDisplayPage({
     super.key,
     required this.onExit,
     this.onPause,
     this.onPlay,
     this.onRefresh,
-    this.onTickets,
   });
 
   @override
@@ -436,7 +433,6 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
                       onPlay: _handlePlay,
                       onRefresh: _handleRefresh,
                       onExit: _handleExit,
-                      onTickets: widget.onTickets,
                       isPaused: _isPaused,
                       isSleeping: _isSleeping,
                       isIdle: _isIdle,

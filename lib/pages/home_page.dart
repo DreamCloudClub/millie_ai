@@ -548,7 +548,6 @@ class _HomePageState extends State<HomePage> {
       return OrderDisplayPage(
         key: _orderDisplayKey,
         onExit: _exitToLaunch,
-        onTickets: () => setState(() => _currentView = MainView.tickets),
         onPause: () {
           debugPrint('⏸️ Pause pressed');
           conversationService.pauseConversation();
