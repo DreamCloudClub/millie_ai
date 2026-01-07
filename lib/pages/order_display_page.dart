@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../utils/constants.dart';
 import '../widgets/control_bar.dart';
-import '../widgets/thought_bubble.dart';
 
 /// Customer-facing order display with robot face and animated thought bubble
 /// Face shrinks and slides down when thought bubble opens
@@ -420,21 +419,6 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
                 ),
               ),
               
-              // Thought bubble - positioned high (only when items exist)
-              if (_showThought && _orderItems.isNotEmpty)
-                Positioned(
-                  top: screenH * 0.12,  // About 12% from top - halfway between top and eyes
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: AnimatedOpacity(
-                      opacity: animValue.clamp(0.0, 1.0),
-                      duration: const Duration(milliseconds: 300),
-                      child: _buildSmallBubble(),
-                    ),
-                ),
-              ),
-              
               // Control Bar Overlay
               if (_showControlBar)
                 Stack(
@@ -466,22 +450,6 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     );
   }
 
-  Widget _buildSmallBubble() {
-    // Cartoon thought bubble with cloud edges and trailing dots
-    return ThoughtBubble(
-      backgroundColor: Colors.black,
-      borderColor: Colors.blue,
-      borderWidth: 2.5,
-      child: Text(
-        _orderItems.join(', '),
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
 
 
   /// Get base opacity based on current state
@@ -558,30 +526,117 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   }
 
   Widget _buildMouth(double screenWidth) {
-    // Match millie_mini - fixed size mouth with glow animation, no bouncing
     final mouthWidth = screenWidth * 0.50;
-    const mouthHeight = 16.0;  // Same as millie_mini
+    const closedHeight = 16.0;
+    const openHeight = 200.0;  // Height when ticket is showing
     
-    // Glow intensity based on speaking state (like millie_mini)
+    // Use thought animation for mouth expansion
+    final animValue = Curves.easeOutBack.transform(_thoughtCtrl.value);
+    final currentHeight = closedHeight + (openHeight - closedHeight) * animValue;
+    
+    // Glow intensity based on speaking state
     final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
     final opacity = _speaking ? 1.0 : 0.8;
+    
+    // Border radius - pill when closed, rounded rect when open
+    final topRadius = closedHeight / 2;
+    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * animValue;
 
     return Opacity(
       opacity: opacity,
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
         width: mouthWidth,
-        height: mouthHeight,
-      decoration: BoxDecoration(
-        color: Colors.white,
-          borderRadius: BorderRadius.circular(mouthHeight / 2),
-        boxShadow: [
-          BoxShadow(
+        height: currentHeight,
+        decoration: BoxDecoration(
+          color: _showThought ? const Color(0xFF1A1A1A) : Colors.white,
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(topRadius),
+            bottom: Radius.circular(bottomRadius),
+          ),
+          border: _showThought ? Border.all(
+            color: Colors.white.withOpacity(0.8),
+            width: 2,
+          ) : null,
+          boxShadow: [
+            BoxShadow(
               color: Colors.white.withOpacity(glowIntensity),
-            blurRadius: 15,
-            spreadRadius: 2,
+              blurRadius: 15,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: _showThought && _orderItems.isNotEmpty
+            ? ClipRRect(
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(topRadius - 2),
+                  bottom: Radius.circular(bottomRadius - 2),
+                ),
+                child: _buildTicketContent(),
+              )
+            : null,
+      ),
+    );
+  }
+  
+  Widget _buildTicketContent() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        children: [
+          // Ticket header
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Colors.green,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'ORDER',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Divider line
+          Container(
+            height: 1,
+            color: Colors.white.withOpacity(0.3),
+          ),
+          const SizedBox(height: 6),
+          // Scrollable items list
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: _orderItems.length,
+              itemBuilder: (context, index) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    _orderItems[index],
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                );
+              },
+            ),
           ),
         ],
-        ),
       ),
     );
   }
