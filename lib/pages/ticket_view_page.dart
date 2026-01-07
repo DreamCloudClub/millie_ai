@@ -109,64 +109,69 @@ class _TicketViewPageState extends State<TicketViewPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Top bar - just back button and page title
-            Padding(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              child: Row(
-                children: [
-                  // Back button (orange)
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: AppColors.dangerBright,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                  ),
-                  // Title (centered)
-                  Expanded(
-                    child: Text(
-                      _getPageTitle(),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  // Spacer to balance back button
-                  const SizedBox(width: 44),
-                ],
-              ),
+    return Container(
+      color: AppColors.surface,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
             ),
-            
-            // Ticket content in blue border container (card style)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                child: Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: _isOpen ? AppColors.accent : AppColors.dangerBright,
-                      width: 1,
-                    ),
+            child: Column(
+              children: [
+                // Top bar - just back button and page title
+                Padding(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  child: Row(
+                    children: [
+                      // Back button (orange)
+                      GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: AppColors.dangerBright,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.arrow_back,
+                            color: Colors.white,
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                      // Title (centered)
+                      Expanded(
+                        child: Text(
+                          _getPageTitle(),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      // Spacer to balance back button
+                      const SizedBox(width: 44),
+                    ],
                   ),
+                ),
+                
+                // Ticket content card
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.medium),
+                      border: Border.all(color: AppColors.border),
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -325,64 +330,15 @@ class _TicketViewPageState extends State<TicketViewPage> {
                     ),
                         ),
                       ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
+                
+                const SizedBox(height: AppSpacing.md),
+              ],
             ),
-            
-            const SizedBox(height: AppSpacing.sm),
-            
-            // Bottom control bar (inline - ControlBar is for overlay use)
-            Container(
-              margin: const EdgeInsets.only(
-                left: AppSpacing.lg,
-                right: AppSpacing.lg,
-                bottom: AppSpacing.lg,
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
-                vertical: AppSpacing.md,
-              ),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2A2A2A),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.4),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-              ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildControlButton(
-                    icon: Icons.refresh,
-                    label: 'Refresh',
-                    onTap: widget.onRefresh,
-                    color: AppColors.success,
-                  ),
-                  _buildControlButton(
-                    icon: Icons.pause,
-                    label: 'Pause',
-                    onTap: widget.onPause,
-                    color: AppColors.accent,
-                  ),
-                  _buildControlButton(
-                    icon: Icons.close,
-                    label: 'Exit',
-                    onTap: () {
-                      Navigator.pop(context);  // Pop this view first
-                      widget.onExit();  // Then exit to dashboard
-                    },
-                    color: AppColors.dangerBright,
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
