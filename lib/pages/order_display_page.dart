@@ -467,26 +467,13 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   }
 
   Widget _buildSmallBubble() {
-    // Rounded rectangle bubble above the eyes - blue border, black bg, white text
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.blue,
-          width: 2,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.blue.withOpacity(0.3),
-            blurRadius: 15,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
+    // Cartoon thought bubble with cloud edges and trailing dots
+    return ThoughtBubble(
+      backgroundColor: Colors.black,
+      borderColor: Colors.blue,
+      borderWidth: 2.5,
       child: Text(
-        _orderItems.join(', '),  // Only shown when items exist
+        _orderItems.join(', '),
         style: const TextStyle(
           color: Colors.white,
           fontSize: 18,
@@ -496,64 +483,6 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     );
   }
 
-  Widget _buildThoughtBubble() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 40),
-      child: ThoughtBubble(
-        backgroundColor: AppColors.surface,
-        borderColor: AppColors.accent.withOpacity(0.7),
-        borderWidth: 2.5,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Row(
-              children: [
-                Icon(Icons.psychology, color: AppColors.accent, size: 22),
-                const SizedBox(width: AppSpacing.xs),
-                const Text(
-                  'Order',
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                _PulsingDot(),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.md),
-            
-            // Order items
-            if (_orderItems.isEmpty)
-              Text(
-                'Waiting for order...',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.4),
-                  fontSize: 20,
-                  fontStyle: FontStyle.italic,
-                ),
-              )
-            else
-              ..._orderItems.map((item) => Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  item,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w500,
-                    height: 1.3,
-                  ),
-                ),
-              )),
-          ],
-        ),
-      ),
-    );
-  }
 
   /// Get base opacity based on current state
   double get _baseOpacity {
