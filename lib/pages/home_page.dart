@@ -19,7 +19,7 @@ import 'ticket_view_page.dart';
 MainView? _persistedView;
 
 /// Display mode for face tablet
-enum DisplayMode { dashboard, face, tickets }
+enum DisplayMode { dashboard, face }
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -51,9 +51,6 @@ class _HomePageState extends State<HomePage> {
   // Current ticket (last created, for "Display Current Ticket")
   Ticket? _currentTicket;
   
-  // PageController for Face/Tickets swipe navigation
-  late PageController _faceTicketsController;
-  
   // Use top-level persisted state with fallback defaults
   // Default to Launch page for the face tablet
   MainView get _currentView => _persistedView ?? MainView.launch;
@@ -68,9 +65,6 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     robotApi = RobotApi("http://192.168.1.14:5050");
     rosBridge = RosBridge("ws://192.168.1.14:9090");
-    
-    // Initialize PageController (Face = 0, Tickets = 1)
-    _faceTicketsController = PageController(initialPage: 0);
     
     // Initialize location service for ticket creation
     LocationService.instance.init(rosBridge);
@@ -267,7 +261,10 @@ class _HomePageState extends State<HomePage> {
         _launchFace();  // Always call - it handles the animation
         break;
       case 'Display Tickets':
-        _showTickets();
+        setState(() {
+          _displayMode = DisplayMode.dashboard;
+          _currentView = MainView.tickets;
+        });
         break;
       case 'Display Current Ticket':
         _showCurrentTicket();
@@ -287,7 +284,10 @@ class _HomePageState extends State<HomePage> {
     if (_currentTicket == null) {
       debugPrint('⚠️ No current ticket to display');
       // Fall back to tickets list
-      _showTickets();
+      setState(() {
+        _displayMode = DisplayMode.dashboard;
+        _currentView = MainView.tickets;
+      });
       return;
     }
     
@@ -461,7 +461,6 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     rosBridge.removeWorkflowStatusListener(_handleWorkflowStatus);
-    _faceTicketsController.dispose();
     rosBridge.close();
     super.dispose();
   }
@@ -505,51 +504,12 @@ class _HomePageState extends State<HomePage> {
 
   void _launchFace() {
     debugPrint('🎭 _launchFace() called - current mode: $_displayMode');
-    final wasInPageView = _displayMode == DisplayMode.face || _displayMode == DisplayMode.tickets;
-    debugPrint('🎭 wasInPageView: $wasInPageView, hasClients: ${_faceTicketsController.hasClients}');
     
     setState(() => _displayMode = DisplayMode.face);
     
     // Start wake word listening when entering face mode (if idle)
     if (conversationService.isIdle) {
       WakeService.instance.start();
-    }
-    
-    // Animate to face page (index 0) if already in PageView, otherwise jump after frame
-    if (wasInPageView && _faceTicketsController.hasClients) {
-      debugPrint('🎭 Animating to face page (index 0)');
-      _faceTicketsController.animateToPage(
-        0,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    } else {
-      debugPrint('🎭 Jumping to face page after frame');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        debugPrint('🎭 Post-frame callback - hasClients: ${_faceTicketsController.hasClients}');
-        if (_faceTicketsController.hasClients) {
-          _faceTicketsController.jumpToPage(0);
-        }
-      });
-    }
-  }
-
-  void _showTickets() {
-    final wasInPageView = _displayMode == DisplayMode.face || _displayMode == DisplayMode.tickets;
-    setState(() => _displayMode = DisplayMode.tickets);
-    // Animate to tickets page (index 1) if already in PageView, otherwise jump after frame
-    if (wasInPageView && _faceTicketsController.hasClients) {
-      _faceTicketsController.animateToPage(
-        1,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_faceTicketsController.hasClients) {
-          _faceTicketsController.jumpToPage(1);
-        }
-      });
     }
   }
 
@@ -581,60 +541,41 @@ class _HomePageState extends State<HomePage> {
     _orderDisplayKey.currentState?.setSpeaking(speaking);
   }
 
-  void _onPageChanged(int page) {
-    setState(() {
-      _displayMode = page == 0 ? DisplayMode.face : DisplayMode.tickets;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
-    // Face/Tickets mode - swipeable PageView
-    if (_displayMode == DisplayMode.face || _displayMode == DisplayMode.tickets) {
-      return PageView(
-        controller: _faceTicketsController,
-        onPageChanged: _onPageChanged,
-        children: [
-          // Page 0: Face
-          OrderDisplayPage(
+    // Face mode - standalone (customer-facing)
+    if (_displayMode == DisplayMode.face) {
+      return OrderDisplayPage(
         key: _orderDisplayKey,
         onExit: _exitToLaunch,
-        onTickets: _showTickets,
-            onPause: () {
-              debugPrint('⏸️ Pause pressed');
-              conversationService.pauseConversation();
-              _orderDisplayKey.currentState?.setPaused(true);
-              // Start wake word so "Hey Millie" can resume
-              WakeService.instance.start();
-            },
-            onPlay: () async {
-              debugPrint('▶️ Play pressed');
-              if (conversationService.isPaused) {
-                // Resume paused conversation - just start listening again
-                debugPrint('▶️ Resuming paused conversation');
-                await conversationService.resumeConversation();
-                _orderDisplayKey.currentState?.setPaused(false);
-              } else if (conversationService.isIdle) {
-                // No active conversation - start default conversation
-                debugPrint('🎯 Starting default conversation');
-                await conversationService.startDefaultConversation();
-              }
-            },
-            onRefresh: () async {
-              debugPrint('🔄 Refresh pressed - cancelling conversation and resetting counter');
-              await conversationService.cancelConversation();
-              conversationService.resetTicketCounter();
-              // Also cancel any running workflow
-              rosBridge.publishWorkflowCancel();
-            },
-          ),
-          // Page 1: Tickets
-          TicketsPage(
-            rosBridge: rosBridge,
-            onBack: _launchFace,  // Back arrow goes to face
-            onExit: _exitToLaunch,  // Exit button goes to dashboard
-          ),
-        ],
+        onTickets: () => setState(() => _currentView = MainView.tickets),
+        onPause: () {
+          debugPrint('⏸️ Pause pressed');
+          conversationService.pauseConversation();
+          _orderDisplayKey.currentState?.setPaused(true);
+          // Start wake word so "Hey Millie" can resume
+          WakeService.instance.start();
+        },
+        onPlay: () async {
+          debugPrint('▶️ Play pressed');
+          if (conversationService.isPaused) {
+            // Resume paused conversation - just start listening again
+            debugPrint('▶️ Resuming paused conversation');
+            await conversationService.resumeConversation();
+            _orderDisplayKey.currentState?.setPaused(false);
+          } else if (conversationService.isIdle) {
+            // No active conversation - start default conversation
+            debugPrint('🎯 Starting default conversation');
+            await conversationService.startDefaultConversation();
+          }
+        },
+        onRefresh: () async {
+          debugPrint('🔄 Refresh pressed - cancelling conversation and resetting counter');
+          await conversationService.cancelConversation();
+          conversationService.resetTicketCounter();
+          // Also cancel any running workflow
+          rosBridge.publishWorkflowCancel();
+        },
       );
     }
     
@@ -731,14 +672,21 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildMainContent() {
     switch (_currentView) {
+      case MainView.tickets:
+        return TicketsPage(
+          key: _ticketsKey,
+          rosBridge: rosBridge,
+          onBack: () => setState(() => _currentView = MainView.launch),
+          onExit: () => setState(() => _currentView = MainView.launch),
+        );
+      case MainView.locations:
+        return LocationsPage(rosBridge: rosBridge);
       case MainView.launch:
         return LaunchPage(
           rosBridge: rosBridge,
           onLaunch: _launchFace,
-          onShowTickets: _showTickets,
+          onShowTickets: () => setState(() => _currentView = MainView.tickets),
         );
-      case MainView.locations:
-        return LocationsPage(rosBridge: rosBridge);
       case MainView.settings:
         return SettingsPage(
           rosBridge: rosBridge,
