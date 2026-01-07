@@ -1356,6 +1356,33 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                         ),
                       ),
                     ),
+                    const SizedBox(width: AppSpacing.xs),
+                    // Delete button
+                    GestureDetector(
+                      onTap: () {
+                        _deleteTicket(ticket);
+                        _editTitleController.clear();
+                        _editItemsController.clear();
+                        setState(() {
+                          _selectedTicket = null;
+                          _isEditing = false;
+                        });
+                      },
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: AppColors.dangerBright,
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          Icons.delete,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1460,41 +1487,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                             borderSide: BorderSide.none,
                           ),
                           contentPadding: const EdgeInsets.all(AppSpacing.md),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: AppSpacing.xl),
-                      
-                      // Delete button
-                      GestureDetector(
-                        onTap: () {
-                          _deleteTicket(ticket);
-                          _editTitleController.clear();
-                          _editItemsController.clear();
-                          _selectedTicket = null;
-                          _isEditing = false;
-                        },
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          decoration: BoxDecoration(
-                            color: AppColors.dangerBright.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: AppColors.dangerBright,
-                              width: 1.5,
-                            ),
-                          ),
-                          child: const Center(
-                            child: Text(
-                              'Delete',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: AppColors.dangerBright,
-                              ),
-                            ),
-                          ),
                         ),
                       ),
                       
