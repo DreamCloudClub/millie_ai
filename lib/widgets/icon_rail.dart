@@ -47,6 +47,13 @@ class IconRail extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _NavButton(
+                  icon: Icons.smart_toy,
+                  label: 'Launch',
+                  isActive: selectedView == MainView.launch,
+                  onPressed: () => onViewChanged(MainView.launch),
+                ),
+                const SizedBox(width: AppSpacing.lg),
+                _NavButton(
                   icon: Icons.receipt_long,
                   label: 'Tickets',
                   isActive: selectedView == MainView.tickets,
@@ -58,13 +65,6 @@ class IconRail extends StatelessWidget {
                   label: 'Tasks',
                   isActive: selectedView == MainView.locations,
                   onPressed: () => onViewChanged(MainView.locations),
-                ),
-                const SizedBox(width: AppSpacing.lg),
-                _NavButton(
-                  icon: Icons.smart_toy,
-                  label: 'Launch',
-                  isActive: selectedView == MainView.launch,
-                  onPressed: () => onViewChanged(MainView.launch),
                 ),
                 const SizedBox(width: AppSpacing.lg),
                 _NavButton(
