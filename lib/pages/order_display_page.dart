@@ -528,61 +528,53 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildMouth(double screenWidth) {
     final mouthWidth = screenWidth * 0.50;
     const closedHeight = 16.0;
-    const maxHeight = 200.0;  // Max height before scrolling
-    const itemHeight = 32.0;  // Approx height per item (font + padding)
-    const paddingHeight = 32.0;  // Top + bottom padding (more bottom padding)
+    const maxHeight = 200.0;
+    const itemHeight = 32.0;
+    const paddingHeight = 32.0;
     
-    // Calculate dynamic height based on items AND animation state
-    final shouldExpand = _showThought && _orderItems.isNotEmpty;
+    // Simple: expand only when items exist
+    final hasItems = _orderItems.isNotEmpty;
     final contentHeight = paddingHeight + (_orderItems.length * itemHeight);
-    final expandedHeight = contentHeight.clamp(closedHeight, maxHeight);
+    final targetHeight = hasItems 
+        ? contentHeight.clamp(closedHeight, maxHeight) 
+        : closedHeight;
     
-    // Use animation value to smoothly interpolate height
-    final animProgress = _thoughtCtrl.value;
-    final targetHeight = shouldExpand 
-        ? closedHeight + (expandedHeight - closedHeight) * animProgress
-        : closedHeight + (expandedHeight - closedHeight) * animProgress;
+    // Radius: pill when closed, rounded when open
+    final isOpen = targetHeight > closedHeight;
+    final topRadius = isOpen ? 20.0 : closedHeight / 2;
+    final bottomRadius = isOpen ? 20.0 : closedHeight / 2;
     
-    // Glow intensity based on speaking state
-    final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
-    final opacity = _speaking ? 1.0 : 0.8;
-    
-    // Border radius - pill when closed, nicely rounded when open (like eyes)
-    final openProgress = shouldExpand ? ((targetHeight - closedHeight) / (maxHeight - closedHeight)).clamp(0.0, 1.0) : 0.0;
-    final topRadius = closedHeight / 2 + (20 - closedHeight / 2) * openProgress;  // Grows to 20
-    final bottomRadius = closedHeight / 2 + (20 - closedHeight / 2) * openProgress;  // Grows to 20
+    // Glow
+    final glowIntensity = _speaking ? 0.5 : 0.2;
 
-    return Opacity(
-      opacity: opacity,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 350),
-        curve: shouldExpand ? Curves.easeOutBack : Curves.easeInBack,
-        width: mouthWidth,
-        height: targetHeight,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(
-            top: Radius.circular(topRadius),
-            bottom: Radius.circular(bottomRadius),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.white.withOpacity(glowIntensity),
-              blurRadius: 15,
-              spreadRadius: 2,
-            ),
-          ],
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: hasItems ? Curves.easeOutBack : Curves.easeInCubic,
+      width: mouthWidth,
+      height: targetHeight,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(topRadius),
+          bottom: Radius.circular(bottomRadius),
         ),
-        child: shouldExpand
-            ? ClipRRect(
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(topRadius - 2),
-                  bottom: Radius.circular(bottomRadius - 2),
-                ),
-                child: _buildTicketContent(),
-              )
-            : null,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.white.withOpacity(glowIntensity),
+            blurRadius: 15,
+            spreadRadius: 2,
+          ),
+        ],
       ),
+      child: hasItems
+          ? ClipRRect(
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(topRadius - 2),
+                bottom: Radius.circular(bottomRadius - 2),
+              ),
+              child: _buildTicketContent(),
+            )
+          : null,
     );
   }
   
