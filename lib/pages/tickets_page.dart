@@ -810,121 +810,162 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
     super.build(context);
     
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Column(
           children: [
-            // Top bar
-            Padding(
+            // Consolidated top bar (dashboard style)
+            Container(
+              margin: const EdgeInsets.all(AppSpacing.sm),
               padding: const EdgeInsets.all(AppSpacing.md),
-              child: Row(
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Column(
                 children: [
-                  // Title (left-aligned)
-                  const Text(
-                    'AI Tickets',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const Spacer(),
-                  // Daily refresh button (green) - clears all tickets
-                    GestureDetector(
-                      onTap: clearAllTickets,
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: AppColors.success,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(
-                          Icons.refresh,
+                  // Row 1: Title + Search + Refresh
+                  Row(
+                    children: [
+                      // Title
+                      const Text(
+                        'AI Tickets',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
                           color: Colors.white,
-                          size: 24,
                         ),
                       ),
+                      const SizedBox(width: AppSpacing.md),
+                      // Search field
+                      Expanded(
+                        child: Container(
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: Row(
+                            children: [
+                              const SizedBox(width: AppSpacing.sm),
+                              Icon(Icons.search, color: AppColors.textMuted, size: 18),
+                              const SizedBox(width: AppSpacing.xs),
+                              Expanded(
+                                child: TextField(
+                                  controller: _searchController,
+                                  focusNode: _searchFocusNode,
+                                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                                  decoration: InputDecoration(
+                                    hintText: 'Search...',
+                                    hintStyle: TextStyle(color: AppColors.textMuted),
+                                    border: InputBorder.none,
+                                    isCollapsed: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
+                              ),
+                              if (_searchQuery.isNotEmpty)
+                                GestureDetector(
+                                  onTap: _clearSearch,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+                                    child: Icon(Icons.close, color: AppColors.textMuted, size: 18),
+                                  ),
+                                ),
+                              const SizedBox(width: AppSpacing.sm),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      // Refresh button
+                      GestureDetector(
+                        onTap: clearAllTickets,
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppColors.success,
+                            borderRadius: BorderRadius.circular(AppRadius.small),
+                          ),
+                          child: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  // Row 2: Filter toggle (Closed / Open)
+                  Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(8),
                     ),
+                    child: Row(
+                      children: [
+                        // Closed
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => setState(() => _filter = TicketFilter.closed),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: _filter == TicketFilter.closed 
+                                    ? AppColors.dangerBright 
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  'Closed',
+                                  style: TextStyle(
+                                    color: _filter == TicketFilter.closed 
+                                        ? Colors.white 
+                                        : AppColors.textMuted,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Open
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => setState(() => _filter = TicketFilter.open),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: _filter == TicketFilter.open 
+                                    ? AppColors.accent 
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  'Open',
+                                  style: TextStyle(
+                                    color: _filter == TicketFilter.open 
+                                        ? Colors.white 
+                                        : AppColors.textMuted,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
             
-            // Search bar
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-              child: SizedBox(
-                height: 44,
-                child: Row(
-                  children: [
-                    // Clear button
-                    GestureDetector(
-                      onTap: _clearSearch,
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade700,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.close,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    // Search field
-                    Expanded(
-                      child: Container(
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: Center(
-                        child: TextField(
-                          controller: _searchController,
-                          focusNode: _searchFocusNode,
-                          textAlignVertical: TextAlignVertical.center,
-                          style: const TextStyle(color: Colors.white, fontSize: 16),
-                          decoration: InputDecoration(
-                            hintText: 'Search for tickets...',
-                            hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
-                            border: InputBorder.none,
-                              isCollapsed: true,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    // Search icon
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.search,
-                        color: Colors.black,
-                        size: 24,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-            
-            // Open/Closed filter toggle
-            _buildFilterToggle(),
-            
-            const SizedBox(height: AppSpacing.sm),
+            const SizedBox(height: AppSpacing.xs),
             
             // Tickets list in bordered container
             Expanded(
