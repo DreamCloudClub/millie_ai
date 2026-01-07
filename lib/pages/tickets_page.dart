@@ -3,7 +3,6 @@ import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 import '../models/ticket.dart';
 import '../services/location_service.dart';
-import 'ticket_view_page.dart';
 import 'ticket_edit_page.dart';
 
 /// Employee-facing Tickets page (like AI Notebook from millie_mini)
@@ -40,6 +39,9 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   final FocusNode _searchFocusNode = FocusNode();
   String _searchQuery = '';
   TicketFilter _filter = TicketFilter.open;  // Default to Open tickets
+  
+  // Selected ticket for detail view (null = show list)
+  Ticket? _selectedTicket;
   
   // Waypoints and sequences for delivery modal
   List<Waypoint> _waypoints = [];
@@ -395,38 +397,12 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   }
 
   void _openTicket(Ticket ticket) {
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => TicketViewPage(
-          rosBridge: widget.rosBridge,
-          ticket: ticket,
-          onTicketUpdated: (updated) {
-            setState(() {
-              final index = _tickets.indexWhere((t) => t.id == updated.id);
-              if (index != -1) {
-                _tickets[index] = updated;
-              }
-            });
-            // Sync to robot
-            widget.rosBridge.publishUpdateTicket(updated.toJson());
-          },
-          onTicketDeleted: () {
-            setState(() {
-              _tickets.removeWhere((t) => t.id == ticket.id);
-            });
-            // Delete from robot
-            widget.rosBridge.publishDeleteTicket(ticket.id);
-          },
-          onPause: widget.onPause ?? () {},
-          onPlay: widget.onPlay ?? () {},
-          onRefresh: widget.onRefresh ?? () {},
-          onExit: widget.onExit ?? widget.onBack,
-        ),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-      ),
-    );
+    // Show detail view within the same page (keeps dashboard frame)
+    setState(() => _selectedTicket = ticket);
+  }
+  
+  void _closeDetailView() {
+    setState(() => _selectedTicket = null);
   }
 
   void _closeTicket(Ticket ticket) {
@@ -809,21 +785,30 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   Widget build(BuildContext context) {
     super.build(context);
     
+    // Show detail view if a ticket is selected
+    if (_selectedTicket != null) {
+      return _buildDetailView();
+    }
+    
+    // Show list view
+    return _buildListView();
+  }
+  
+  Widget _buildListView() {
     return Container(
       color: AppColors.surface,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.sm),
-          child: Column(
-            children: [
-              // Top bar card (dashboard style)
-              Container(
-                padding: const EdgeInsets.all(AppSpacing.md),
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(AppRadius.medium),
-                  border: Border.all(color: AppColors.border),
-                ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.sm),
+        child: Column(
+          children: [
+            // Top bar card (dashboard style)
+            Container(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+                border: Border.all(color: AppColors.border),
+              ),
               child: Column(
                 children: [
                   // Row 1: Title + Search + Refresh
@@ -1010,6 +995,301 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
         ),
       ),
     ),
+    );
+  }
+  
+  Widget _buildDetailView() {
+    final ticket = _selectedTicket!;
+    final isOpen = ticket.status == TicketStatus.open || ticket.status == TicketStatus.inProgress;
+    
+    return Container(
+      color: AppColors.surface,
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.sm),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(AppRadius.medium),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            children: [
+              // Header with back button and title
+              Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Row(
+                  children: [
+                    GestureDetector(
+                      onTap: _closeDetailView,
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: AppColors.dangerBright,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.arrow_back,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        ticket.title.startsWith('Ticket #') 
+                            ? 'AI ${ticket.title}'
+                            : 'AI Ticket',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 44),
+                  ],
+                ),
+              ),
+              
+              // Ticket header with icon and action buttons
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.receipt_long,
+                        color: AppColors.accent,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: Text(
+                        ticket.locationName ?? ticket.title,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    _buildDetailActionButton(
+                      label: 'Edit',
+                      color: AppColors.accent,
+                      onTap: () => _openEditPage(ticket),
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
+                    _buildDetailActionButton(
+                      label: isOpen ? 'Close' : 'Open',
+                      color: isOpen ? AppColors.dangerBright : AppColors.success,
+                      onTap: isOpen 
+                          ? () { _closeTicket(ticket); _closeDetailView(); }
+                          : () => _reopenTicket(ticket),
+                    ),
+                    if (isOpen) ...[
+                      const SizedBox(width: AppSpacing.xs),
+                      _buildDetailActionButton(
+                        label: 'Deliver',
+                        color: AppColors.success,
+                        onTap: () => _showDeliverDialog(ticket),
+                        solid: true,
+                      ),
+                    ],
+                    const SizedBox(width: AppSpacing.xs),
+                    GestureDetector(
+                      onTap: () { _deleteTicket(ticket); _closeDetailView(); },
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: AppColors.dangerBright,
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          Icons.delete,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: AppSpacing.md),
+              
+              // Divider
+              Container(
+                height: 1,
+                margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                color: Colors.white.withOpacity(0.1),
+              ),
+              
+              // Ticket number + timestamp
+              Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Row(
+                  children: [
+                    Text(
+                      'Ticket #${ticket.ticketNumber}',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white.withOpacity(0.7),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.lg),
+                    Text(
+                      _formatDetailDate(ticket.timestamp),
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.white.withOpacity(0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              // Items list
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (ticket.items.isNotEmpty)
+                        ...ticket.items.map((item) => Padding(
+                          padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '• ',
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  color: Colors.white.withOpacity(0.7),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  item,
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    color: Colors.white,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ))
+                      else
+                        Text(
+                          'No items',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.white.withOpacity(0.3),
+                          ),
+                        ),
+                      const SizedBox(height: AppSpacing.md),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildDetailActionButton({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+    bool solid = false,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 40,
+        padding: EdgeInsets.symmetric(
+          horizontal: solid ? AppSpacing.xl : AppSpacing.lg,
+        ),
+        decoration: BoxDecoration(
+          color: solid ? color : color.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(AppRadius.small),
+          border: solid ? null : Border.all(color: color, width: 1.5),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: solid ? Colors.white : color,
+          ),
+        ),
+      ),
+    );
+  }
+  
+  String _formatDetailDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+    final hour = date.hour > 12 ? date.hour - 12 : (date.hour == 0 ? 12 : date.hour);
+    final period = date.hour >= 12 ? 'PM' : 'AM';
+    final timeStr = '$hour:${date.minute.toString().padLeft(2, '0')} $period';
+
+    if (difference.inDays == 0) {
+      return 'Today at $timeStr';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday at $timeStr';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays} days ago';
+    } else {
+      return '${date.month}/${date.day}/${date.year}';
+    }
+  }
+  
+  void _openEditPage(Ticket ticket) {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => TicketEditPage(
+          ticket: ticket,
+          onTicketUpdated: (updated) {
+            setState(() {
+              final index = _tickets.indexWhere((t) => t.id == updated.id);
+              if (index != -1) {
+                _tickets[index] = updated;
+              }
+              _selectedTicket = updated;
+            });
+            widget.rosBridge.publishUpdateTicket(updated.toJson());
+          },
+          onTicketDeleted: () {
+            setState(() {
+              _tickets.removeWhere((t) => t.id == ticket.id);
+              _selectedTicket = null;
+            });
+            widget.rosBridge.publishDeleteTicket(ticket.id);
+          },
+        ),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+      ),
     );
   }
 
