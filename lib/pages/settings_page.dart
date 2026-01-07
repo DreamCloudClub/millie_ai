@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 import '../utils/robot_api.dart';
+import '../widgets/top_notification.dart';
 
 // Top-level state that persists across orientation changes
 _SettingsSection? _persistedSection;
@@ -408,9 +409,7 @@ class _RobotSectionState extends State<_RobotSection> {
   }
   
   void _showSnackBar(String message, Color color) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: color),
-    );
+    TopNotification.show(context, message: message, backgroundColor: color);
   }
 
   @override
@@ -1681,12 +1680,7 @@ class _ProfileSectionState extends State<_ProfileSection> {
     widget.rosBridge.publishSaveCompanyInfo(rosInfo);
     
     setState(() => _isEditing = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Profile saved'),
-        backgroundColor: AppColors.success,
-      ),
-    );
+    TopNotification.show(context, message: 'Profile saved', backgroundColor: AppColors.success);
   }
   
   Future<void> _pickTime(DailyHours day, bool isOpen) async {
@@ -2785,9 +2779,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
   void _saveAgent() {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agent name is required'), backgroundColor: AppColors.danger),
-      );
+      TopNotification.show(context, message: 'Agent name is required', backgroundColor: AppColors.danger);
       return;
     }
     
@@ -2809,9 +2801,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     widget.rosBridge.publishSaveAgent(agent);
     setState(() => _editingIndex = null);
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Agent "$name" saved'), backgroundColor: AppColors.success),
-    );
+    TopNotification.show(context, message: 'Agent "$name" saved', backgroundColor: AppColors.success);
   }
   
   void _deleteAgent() {
@@ -2821,9 +2811,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     widget.rosBridge.publishDeleteAgent(name);
     setState(() => _editingIndex = null);
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Agent "$name" deleted'), backgroundColor: AppColors.warning),
-    );
+    TopNotification.show(context, message: 'Agent "$name" deleted', backgroundColor: AppColors.warning);
   }
   
   void _cancelEdit() {
@@ -2939,12 +2927,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     // Save the agent with isDefault = true
     final updatedAgent = agent.copyWith(isDefault: true);
     widget.rosBridge.publishSaveAgent(updatedAgent);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${agent.name} is now the default agent'),
-        backgroundColor: AppColors.success,
-      ),
-    );
+    TopNotification.show(context, message: '${agent.name} is now default', backgroundColor: AppColors.success);
   }
 
   Widget _buildAgentCard(int index, AgentDefinition agent) {

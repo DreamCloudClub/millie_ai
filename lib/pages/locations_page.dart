@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 import '../services/location_service.dart';
+import '../widgets/top_notification.dart';
 import 'action_editor_page.dart';
 
 /// Locations page - Grid/List view of waypoints for quick navigation
@@ -548,13 +549,7 @@ class _LocationsPageState extends State<LocationsPage> {
   }
 
   void _showNotification(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.success,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    TopNotification.show(context, message: message, backgroundColor: AppColors.success);
   }
 
   @override

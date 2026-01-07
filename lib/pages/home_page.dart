@@ -3,6 +3,7 @@ import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 import '../utils/robot_api.dart';
 import '../widgets/icon_rail.dart';
+import '../widgets/top_notification.dart';
 import '../services/conversation_service.dart';
 import '../services/location_service.dart';
 import '../services/wake_service.dart';
@@ -474,53 +475,32 @@ class _HomePageState extends State<HomePage> {
       setState(() => _displayMode = DisplayMode.dashboard);
     }
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🛑 E-STOP ACTIVATED - All motion stopped'),
-        backgroundColor: AppColors.danger,
-        duration: Duration(seconds: 3),
-      ),
+    TopNotification.show(
+      context,
+      message: '🛑 E-STOP ACTIVATED',
+      backgroundColor: AppColors.danger,
+      duration: const Duration(seconds: 3),
     );
   }
 
   void _handleShutdown() async {
     debugPrint("⚡ Power shutdown confirmed");
     final result = await robotApi.shutdown();
-    if (result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('🔌 Robot shutting down...'),
-          backgroundColor: AppColors.warning,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('❌ Shutdown failed: ${result.message}'),
-          backgroundColor: AppColors.danger,
-        ),
-      );
-    }
+    TopNotification.show(
+      context,
+      message: result.success ? '🔌 Robot shutting down...' : '❌ Shutdown failed',
+      backgroundColor: result.success ? AppColors.warning : AppColors.danger,
+    );
   }
 
   void _handleReboot() async {
     debugPrint("🔄 Reboot confirmed");
     final result = await robotApi.reboot();
-    if (result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('🔄 Robot rebooting...'),
-          backgroundColor: AppColors.warning,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('❌ Reboot failed: ${result.message}'),
-          backgroundColor: AppColors.danger,
-        ),
-      );
-    }
+    TopNotification.show(
+      context,
+      message: result.success ? '🔄 Robot rebooting...' : '❌ Reboot failed',
+      backgroundColor: result.success ? AppColors.warning : AppColors.danger,
+    );
   }
 
   void _launchFace() {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import '../models/ticket.dart';
+import '../widgets/top_notification.dart';
 
 /// Edit a ticket manually
 /// Like "Note Edit Page" from millie_mini
@@ -86,22 +87,20 @@ class _TicketEditPageState extends State<TicketEditPage> {
       widget.onTicketUpdated(savedTicket);
       
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isEditing ? 'Ticket saved' : 'Ticket created'),
-            backgroundColor: AppColors.success,
-          ),
+        TopNotification.show(
+          context,
+          message: isEditing ? 'Ticket saved' : 'Ticket created',
+          backgroundColor: AppColors.success,
         );
         Navigator.pop(context);
       }
     } catch (e) {
       setState(() => _isSaving = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error saving ticket: $e'),
-            backgroundColor: AppColors.danger,
-          ),
+        TopNotification.show(
+          context,
+          message: 'Error saving ticket',
+          backgroundColor: AppColors.danger,
         );
       }
     }

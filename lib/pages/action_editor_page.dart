@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
+import '../widgets/top_notification.dart';
 
 /// Full-page editor for creating/editing Actions
 class ActionEditorPage extends StatefulWidget {
@@ -120,12 +121,7 @@ class _ActionEditorPageState extends State<ActionEditorPage> {
   void _save() {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter an Action Title'),
-          backgroundColor: AppColors.danger,
-        ),
-      );
+      TopNotification.show(context, message: 'Please enter an Action Title', backgroundColor: AppColors.danger);
       return;
     }
     
