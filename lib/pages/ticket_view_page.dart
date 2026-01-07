@@ -123,7 +123,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Left: Millie Bot AI
                   const Text(
                     'Millie Bot AI',
                     style: TextStyle(
@@ -132,7 +131,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                       color: AppColors.textPrimary,
                     ),
                   ),
-                  // Center: Logo in blue rounded square
                   Container(
                     width: 40,
                     height: 40,
@@ -149,7 +147,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                       ),
                     ),
                   ),
-                  // Right: Dream Cloud
                   const Text(
                     'Dream Cloud',
                     style: TextStyle(
@@ -162,7 +159,7 @@ class _TicketViewPageState extends State<TicketViewPage> {
               ),
             ),
             
-            // Content area
+            // Content area with dark card
             Expanded(
               child: Container(
                 color: AppColors.surface,
@@ -180,7 +177,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                         padding: const EdgeInsets.all(AppSpacing.md),
                         child: Row(
                           children: [
-                            // Back button (orange)
                             GestureDetector(
                               onTap: () => Navigator.pop(context),
                               child: Container(
@@ -197,7 +193,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                                 ),
                               ),
                             ),
-                            // Title (centered)
                             Expanded(
                               child: Text(
                                 _getPageTitle(),
@@ -209,25 +204,16 @@ class _TicketViewPageState extends State<TicketViewPage> {
                                 ),
                               ),
                             ),
-                            // Spacer to balance back button
                             const SizedBox(width: 44),
                           ],
                         ),
                       ),
                       
-                      // Ticket content
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Header row with icon, title, and action buttons
+                      // Ticket header with icon and action buttons
                       Padding(
-                        padding: const EdgeInsets.all(AppSpacing.md),
+                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
                         child: Row(
                           children: [
-                            // Ticket icon
                             Container(
                               width: 48,
                               height: 48,
@@ -242,32 +228,28 @@ class _TicketViewPageState extends State<TicketViewPage> {
                               ),
                             ),
                             const SizedBox(width: AppSpacing.md),
-                            // Title (location name)
                             Expanded(
-                          child: Text(
+                              child: Text(
                                 _currentTicket.locationName ?? _currentTicket.title,
-                            style: const TextStyle(
+                                style: const TextStyle(
                                   fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            // Action buttons
                             _buildActionButton(
                               label: 'Edit',
                               color: AppColors.accent,
                               onTap: _openEditPage,
-                        ),
+                            ),
                             const SizedBox(width: AppSpacing.xs),
-                            // Close/Open button - Close (orange) for open, Open (green) for closed
                             _buildActionButton(
                               label: _isOpen ? 'Close' : 'Open',
                               color: _isOpen ? AppColors.dangerBright : AppColors.success,
                               onTap: _isOpen ? _closeTicket : _reopenTicket,
                             ),
-                            // Deliver button (green) - only for open tickets
                             if (_isOpen) ...[
                               const SizedBox(width: AppSpacing.xs),
                               _buildActionButton(
@@ -278,7 +260,6 @@ class _TicketViewPageState extends State<TicketViewPage> {
                               ),
                             ],
                             const SizedBox(width: AppSpacing.xs),
-                            // Delete button (orange square)
                             GestureDetector(
                               onTap: _deleteTicket,
                               child: Container(
@@ -293,20 +274,23 @@ class _TicketViewPageState extends State<TicketViewPage> {
                                   Icons.delete,
                                   color: Colors.white,
                                   size: 22,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
                           ],
                         ),
                       ),
-                        
-                        // Divider line
-                        Container(
-                          height: 1,
-                          color: Colors.white.withOpacity(0.1),
-                        ),
-                        
-                      // Ticket number + timestamp row
+                      
+                      const SizedBox(height: AppSpacing.md),
+                      
+                      // Divider
+                      Container(
+                        height: 1,
+                        margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                        color: Colors.white.withOpacity(0.1),
+                      ),
+                      
+                      // Ticket number + timestamp
                       Padding(
                         padding: const EdgeInsets.all(AppSpacing.md),
                         child: Row(
@@ -322,16 +306,16 @@ class _TicketViewPageState extends State<TicketViewPage> {
                             const SizedBox(width: AppSpacing.lg),
                             Text(
                               _formatDate(_currentTicket.timestamp),
-                            style: TextStyle(
-                              fontSize: 14,
+                              style: TextStyle(
+                                fontSize: 14,
                                 color: Colors.white.withOpacity(0.5),
                               ),
                             ),
                           ],
-                            ),
-                          ),
+                        ),
+                      ),
                       
-                      // Items list (scrollable)
+                      // Items list
                       Expanded(
                         child: SingleChildScrollView(
                           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
@@ -339,53 +323,50 @@ class _TicketViewPageState extends State<TicketViewPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               if (_currentTicket.items.isNotEmpty)
-                          ..._currentTicket.items.map((item) => Padding(
+                                ..._currentTicket.items.map((item) => Padding(
                                   padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
                                       Text(
-                                  '• ',
-                                  style: TextStyle(
+                                        '• ',
+                                        style: TextStyle(
                                           fontSize: 20,
                                           color: Colors.white.withOpacity(0.7),
-                                  ),
-                                ),
-                                Expanded(
-                                  child: Text(
-                                    item,
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Text(
+                                          item,
                                           style: const TextStyle(
                                             fontSize: 20,
                                             color: Colors.white,
-                                      height: 1.4,
-                                    ),
+                                            height: 1.4,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                              ],
-                            ),
                                 ))
                               else
-                          Text(
-                            'No items',
-                            style: TextStyle(
+                                Text(
+                                  'No items',
+                                  style: TextStyle(
                                     fontSize: 18,
-                              color: Colors.white.withOpacity(0.3),
-                            ),
-                          ),
+                                    color: Colors.white.withOpacity(0.3),
+                                  ),
+                                ),
                               const SizedBox(height: AppSpacing.md),
-                      ],
-                    ),
+                            ],
+                          ),
                         ),
                       ),
-                      ],
-                    ),
+                    ],
                   ),
                 ),
-                
-                const SizedBox(height: AppSpacing.md),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
