@@ -968,17 +968,9 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
             
             const SizedBox(height: AppSpacing.sm),
             
-            // Tickets list card (dashboard style)
+            // Tickets list (cards float on surface)
             Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(AppRadius.medium),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(AppRadius.medium - 1),
-                    child: _isLoading
+              child: _isLoading
                         ? const Center(
                             child: CircularProgressIndicator(color: Colors.white),
                           )
@@ -1001,8 +993,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                                       );
                                     },
                                   ),
-                ),
-              ),
             ),
             
             // Status text
@@ -1161,15 +1151,12 @@ class _TicketCard extends StatelessWidget {
     final isOpen = ticket.status == TicketStatus.open || ticket.status == TicketStatus.inProgress;
     
     return Container(
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
-        decoration: BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isOpen ? AppColors.accent : AppColors.dangerBright,
-          width: 1,
-        ),
-        ),
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
