@@ -994,7 +994,6 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
           ],
         ),
       ),
-    ),
     );
   }
   
@@ -1101,7 +1100,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                       _buildDetailActionButton(
                         label: 'Deliver',
                         color: AppColors.success,
-                        onTap: () => _showDeliverDialog(ticket),
+                        onTap: () => _showDeliverModal(ticket),
                         solid: true,
                       ),
                     ],
