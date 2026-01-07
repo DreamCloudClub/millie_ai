@@ -529,15 +529,19 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
     final mouthWidth = screenWidth * 0.50;
     const closedHeight = 16.0;
     const maxHeight = 200.0;  // Max height before scrolling
-    const itemHeight = 28.0;  // Approx height per item (font + padding)
-    const paddingHeight = 20.0;  // Top + bottom padding
+    const itemHeight = 32.0;  // Approx height per item (font + padding)
+    const paddingHeight = 32.0;  // Top + bottom padding (more bottom padding)
     
-    // Calculate dynamic height based on items
+    // Calculate dynamic height based on items AND animation state
     final shouldExpand = _showThought && _orderItems.isNotEmpty;
     final contentHeight = paddingHeight + (_orderItems.length * itemHeight);
+    final expandedHeight = contentHeight.clamp(closedHeight, maxHeight);
+    
+    // Use animation value to smoothly interpolate height
+    final animProgress = _thoughtCtrl.value;
     final targetHeight = shouldExpand 
-        ? contentHeight.clamp(closedHeight, maxHeight)
-        : closedHeight;
+        ? closedHeight + (expandedHeight - closedHeight) * animProgress
+        : closedHeight + (expandedHeight - closedHeight) * animProgress;
     
     // Glow intensity based on speaking state
     final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
@@ -585,7 +589,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildTicketContent() {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),  // More bottom padding
         child: Column(
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
