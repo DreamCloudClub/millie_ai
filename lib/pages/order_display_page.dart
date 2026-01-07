@@ -528,32 +528,35 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildMouth(double screenWidth) {
     final mouthWidth = screenWidth * 0.50;
     const closedHeight = 16.0;
-    const openHeight = 200.0;  // Height when ticket is showing
+    const maxHeight = 200.0;  // Max height before scrolling
+    const itemHeight = 28.0;  // Approx height per item (font + padding)
+    const paddingHeight = 20.0;  // Top + bottom padding
     
-    // Only expand when we have items (spring animation with overshoot)
+    // Calculate dynamic height based on items
     final shouldExpand = _showThought && _orderItems.isNotEmpty;
-    final animValue = shouldExpand 
-        ? Curves.elasticOut.transform(_thoughtCtrl.value.clamp(0.0, 1.0))
-        : 0.0;
-    final currentHeight = closedHeight + (openHeight - closedHeight) * animValue.clamp(0.0, 1.0);
+    final contentHeight = paddingHeight + (_orderItems.length * itemHeight);
+    final targetHeight = shouldExpand 
+        ? contentHeight.clamp(closedHeight, maxHeight)
+        : closedHeight;
     
     // Glow intensity based on speaking state
     final glowIntensity = _speaking ? (0.3 + 0.3 * _mouthCtrl.value) : 0.2;
     final opacity = _speaking ? 1.0 : 0.8;
     
     // Border radius - pill when closed, rounded rect when open
+    final openProgress = shouldExpand ? ((targetHeight - closedHeight) / (maxHeight - closedHeight)).clamp(0.0, 1.0) : 0.0;
     final topRadius = closedHeight / 2;
-    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * animValue.clamp(0.0, 1.0);
+    final bottomRadius = closedHeight / 2 + (12 - closedHeight / 2) * openProgress;
 
     return Opacity(
       opacity: opacity,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 400),
-        curve: shouldExpand ? Curves.elasticOut : Curves.easeInBack,
+        duration: const Duration(milliseconds: 350),
+        curve: shouldExpand ? Curves.easeOutBack : Curves.easeInBack,
         width: mouthWidth,
-        height: currentHeight,
+        height: targetHeight,
         decoration: BoxDecoration(
-          color: Colors.white,  // Always white background
+          color: Colors.white,
           borderRadius: BorderRadius.vertical(
             top: Radius.circular(topRadius),
             bottom: Radius.circular(bottomRadius),
