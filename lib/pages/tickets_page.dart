@@ -819,26 +819,13 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
               ),
               child: Column(
                 children: [
-                  // Row 1: Title + Search (centered) + Refresh
-                  Row(
+                  // Row 1: Title + Search (truly centered) + Refresh
+                  Stack(
+                    alignment: Alignment.center,
                     children: [
-                      // Title with padding to align with toggle below
-                      const Padding(
-                        padding: EdgeInsets.only(left: AppSpacing.xs),
-                        child: Text(
-                          'AI Tickets',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      // Spacer to push search to center
-                      const Spacer(),
-                      // Search field (narrower, centered)
+                      // Search field (truly centered, wider)
                       Container(
-                        width: 200,
+                        width: 280,
                         height: 36,
                         decoration: BoxDecoration(
                           color: AppColors.surface,
@@ -876,19 +863,33 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                           ],
                         ),
                       ),
-                      // Spacer to balance
-                      const Spacer(),
-                      // Refresh button
-                      GestureDetector(
-                        onTap: clearAllTickets,
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: AppColors.success,
-                            borderRadius: BorderRadius.circular(AppRadius.small),
+                      // Title on left, Refresh on right
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          // Title with padding
+                          const Padding(
+                            padding: EdgeInsets.only(left: AppSpacing.xs),
+                            child: Text(
+                              'AI Tickets',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
                           ),
-                          child: const Icon(Icons.refresh, color: Colors.white, size: 20),
-                        ),
+                          // Refresh button
+                          GestureDetector(
+                            onTap: clearAllTickets,
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: AppColors.success,
+                                borderRadius: BorderRadius.circular(AppRadius.small),
+                              ),
+                              child: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                            ),
                       ),
                     ],
                   ),
