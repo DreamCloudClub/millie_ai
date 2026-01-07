@@ -43,6 +43,9 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   // Selected ticket for detail view (null = show list)
   Ticket? _selectedTicket;
   
+  // Editing mode (true = show edit form instead of detail view)
+  bool _isEditing = false;
+  
   // Waypoints and sequences for delivery modal
   List<Waypoint> _waypoints = [];
   List<SavedSequence> _sequences = [];
@@ -785,6 +788,11 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   Widget build(BuildContext context) {
     super.build(context);
     
+    // Show edit view if editing
+    if (_selectedTicket != null && _isEditing) {
+      return _buildEditView();
+    }
+    
     // Show detail view if a ticket is selected
     if (_selectedTicket != null) {
       return _buildDetailView();
@@ -1250,33 +1258,290 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
   }
   
   void _openEditPage(Ticket ticket) {
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => TicketEditPage(
-          ticket: ticket,
-          onTicketUpdated: (updated) {
-            setState(() {
-              final index = _tickets.indexWhere((t) => t.id == updated.id);
-              if (index != -1) {
-                _tickets[index] = updated;
-              }
-              _selectedTicket = updated;
-            });
-            widget.rosBridge.publishUpdateTicket(updated.toJson());
-          },
-          onTicketDeleted: () {
-            setState(() {
-              _tickets.removeWhere((t) => t.id == ticket.id);
-              _selectedTicket = null;
-            });
-            widget.rosBridge.publishDeleteTicket(ticket.id);
-          },
+    setState(() {
+      _selectedTicket = ticket;
+      _isEditing = true;
+    });
+  }
+  
+  void _closeEditView() {
+    setState(() => _isEditing = false);
+  }
+  
+  // Form controllers for edit view
+  final _editTitleController = TextEditingController();
+  final _editItemsController = TextEditingController();
+  TicketStatus _editStatus = TicketStatus.open;
+  
+  Widget _buildEditView() {
+    final ticket = _selectedTicket!;
+    
+    // Initialize controllers if needed
+    if (_editTitleController.text.isEmpty && ticket.title.isNotEmpty) {
+      _editTitleController.text = ticket.title;
+      _editItemsController.text = ticket.items.join('\n');
+      _editStatus = ticket.status;
+    }
+    
+    return Container(
+      color: AppColors.surface,
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.sm),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(AppRadius.medium),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            children: [
+              // Header row: back, title
+              Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Row(
+                  children: [
+                    // Back button
+                    GestureDetector(
+                      onTap: () {
+                        _editTitleController.clear();
+                        _editItemsController.clear();
+                        _closeEditView();
+                      },
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: AppColors.dangerBright,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.arrow_back,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    // Title
+                    Expanded(
+                      child: Text(
+                        ticket.title.startsWith('Ticket #') 
+                            ? 'Edit AI ${ticket.title}'
+                            : 'Edit AI Ticket',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    // Save button
+                    GestureDetector(
+                      onTap: _saveEditedTicket,
+                      child: Container(
+                        height: 40,
+                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+                        decoration: BoxDecoration(
+                          color: AppColors.success,
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'Save',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              // Form content
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Title field
+                      const Text(
+                        'Title',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      TextField(
+                        controller: _editTitleController,
+                        style: const TextStyle(color: Colors.white, fontSize: 18),
+                        textCapitalization: TextCapitalization.words,
+                        decoration: InputDecoration(
+                          hintText: 'Order #...',
+                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                          filled: true,
+                          fillColor: AppColors.surface,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.all(AppSpacing.md),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: AppSpacing.lg),
+                      
+                      // Status dropdown
+                      const Text(
+                        'Status',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<TicketStatus>(
+                            value: _editStatus,
+                            isExpanded: true,
+                            dropdownColor: AppColors.surface,
+                            style: const TextStyle(color: Colors.white, fontSize: 16),
+                            items: TicketStatus.values.map((status) {
+                              return DropdownMenuItem(
+                                value: status,
+                                child: Text(status.displayName),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _editStatus = value);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: AppSpacing.lg),
+                      
+                      // Items field
+                      const Text(
+                        'Items (one per line)',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      TextField(
+                        controller: _editItemsController,
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                        textCapitalization: TextCapitalization.sentences,
+                        maxLines: 10,
+                        decoration: InputDecoration(
+                          hintText: 'Enter items...',
+                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                          filled: true,
+                          fillColor: AppColors.surface,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.all(AppSpacing.md),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: AppSpacing.xl),
+                      
+                      // Delete button
+                      GestureDetector(
+                        onTap: () {
+                          _deleteTicket(ticket);
+                          _editTitleController.clear();
+                          _editItemsController.clear();
+                          _selectedTicket = null;
+                          _isEditing = false;
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          decoration: BoxDecoration(
+                            color: AppColors.dangerBright.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: AppColors.dangerBright,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'Delete',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.dangerBright,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: AppSpacing.xl),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
       ),
     );
+  }
+  
+  void _saveEditedTicket() {
+    final ticket = _selectedTicket!;
+    
+    // Parse items from text
+    final items = _editItemsController.text
+        .split('\n')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    
+    final updatedTicket = ticket.copyWith(
+      title: _editTitleController.text.trim(),
+      items: items,
+      status: _editStatus,
+    );
+    
+    // Update in list
+    setState(() {
+      final index = _tickets.indexWhere((t) => t.id == ticket.id);
+      if (index != -1) {
+        _tickets[index] = updatedTicket;
+      }
+      _selectedTicket = updatedTicket;
+      _isEditing = false;
+    });
+    
+    // Clear controllers
+    _editTitleController.clear();
+    _editItemsController.clear();
+    
+    // Sync to robot
+    widget.rosBridge.publishUpdateTicket(updatedTicket.toJson());
   }
 
   Widget _buildEmptyState() {
