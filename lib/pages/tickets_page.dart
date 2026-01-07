@@ -890,6 +890,8 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                               ),
                               child: const Icon(Icons.refresh, color: Colors.white, size: 20),
                             ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
