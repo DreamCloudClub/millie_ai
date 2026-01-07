@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../utils/constants.dart';
 import '../widgets/control_bar.dart';
+import '../widgets/thought_bubble.dart';
 
 /// Customer-facing order display with robot face and animated thought bubble
 /// Face shrinks and slides down when thought bubble opens
@@ -498,26 +499,13 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildThoughtBubble() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 40),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: AppColors.accent.withOpacity(0.6),
-            width: 2,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.accent.withOpacity(0.15),
-              blurRadius: 20,
-              spreadRadius: 5,
-            ),
-          ],
-        ),
+      child: ThoughtBubble(
+        backgroundColor: AppColors.surface,
+        borderColor: AppColors.accent.withOpacity(0.7),
+        borderWidth: 2.5,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             // Header
             Row(
@@ -539,37 +527,28 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
             const SizedBox(height: AppSpacing.md),
             
             // Order items
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (_orderItems.isEmpty)
-                      Text(
-                        'Waiting for order...',
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.4),
-                          fontSize: 20,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      )
-                    else
-                      ..._orderItems.map((item) => Padding(
-                        padding: const EdgeInsets.only(bottom: 6),
-                        child: Text(
-                          item,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w500,
-                            height: 1.3,
-                          ),
-                        ),
-                      )),
-                  ],
+            if (_orderItems.isEmpty)
+              Text(
+                'Waiting for order...',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.4),
+                  fontSize: 20,
+                  fontStyle: FontStyle.italic,
                 ),
-              ),
-            ),
+              )
+            else
+              ..._orderItems.map((item) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  item,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w500,
+                    height: 1.3,
+                  ),
+                ),
+              )),
           ],
         ),
       ),
