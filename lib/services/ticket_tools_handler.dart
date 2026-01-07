@@ -212,6 +212,21 @@ class TicketToolsHandler {
       debugPrint('📝 Created new ticket #${_currentTicket!.ticketNumber}');
     }
     
+    // Check for duplicate (case-insensitive)
+    final itemLower = item.toLowerCase().trim();
+    final isDuplicate = _currentTicket!.items.any(
+      (existing) => existing.toLowerCase().trim() == itemLower
+    );
+    
+    if (isDuplicate) {
+      debugPrint('⚠️ Duplicate item ignored: $item');
+      return ToolResult(
+        success: true,
+        message: 'Item already in order.',
+        ticket: _currentTicket,
+      );
+    }
+    
     // Add item
     final updatedItems = List<String>.from(_currentTicket!.items)..add(item);
     _currentTicket = _currentTicket!.copyWith(items: updatedItems);
@@ -248,9 +263,10 @@ class TicketToolsHandler {
       );
     }
     
-    // Update title based on location
+    // Update title based on location and dedupe items as final safety
     final title = _currentTicket!.locationName ?? 'Custom Location';
-    final finalTicket = _currentTicket!.copyWith(title: title);
+    final dedupedItems = _currentTicket!.items.toSet().toList();  // Remove any duplicates
+    final finalTicket = _currentTicket!.copyWith(title: title, items: dedupedItems);
     
     // Save to ROS
     rosBridge.publishSaveTicket(finalTicket.toJson());
