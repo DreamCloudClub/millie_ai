@@ -9,13 +9,11 @@ import '../widgets/mouth_widget.dart';
 class LaunchPage extends StatefulWidget {
   final RosBridge rosBridge;
   final VoidCallback onLaunch;
-  final VoidCallback onShowTickets;
 
   const LaunchPage({
     super.key,
     required this.rosBridge,
     required this.onLaunch,
-    required this.onShowTickets,
   });
 
   @override
@@ -201,32 +199,6 @@ class _LaunchPageState extends State<LaunchPage> {
                           'Launch',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  
-                  const SizedBox(height: AppSpacing.md),
-                  
-                  // Tickets Button (Blue)
-                  GestureDetector(
-                    onTap: widget.onShowTickets,
-                    child: Container(
-                      width: double.infinity,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: AppColors.accent.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(AppRadius.medium),
-                        border: Border.all(color: AppColors.accent, width: 2),
-                      ),
-                      child: const Center(
-                        child: Text(
-                          'Tickets',
-                          style: TextStyle(
-                            color: AppColors.accent,
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),

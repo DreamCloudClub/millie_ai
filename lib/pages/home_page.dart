@@ -685,7 +685,6 @@ class _HomePageState extends State<HomePage> {
         return LaunchPage(
           rosBridge: rosBridge,
           onLaunch: _launchFace,
-          onShowTickets: () => setState(() => _currentView = MainView.tickets),
         );
       case MainView.settings:
         return SettingsPage(
