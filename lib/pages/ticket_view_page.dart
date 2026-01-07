@@ -112,70 +112,117 @@ class _TicketViewPageState extends State<TicketViewPage> {
     return Scaffold(
       backgroundColor: AppColors.surface,
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.sm),
-          child: Container(
-            decoration: BoxDecoration(
+        child: Column(
+          children: [
+            // Top bar - Millie Bot AI | Logo | Dream Cloud
+            Container(
+              height: 56,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
               color: AppColors.background,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              children: [
-                // Top bar - just back button and page title
-                Padding(
-                  padding: const EdgeInsets.all(AppSpacing.md),
-                  child: Row(
-                    children: [
-                      // Back button (orange)
-                      GestureDetector(
-                        onTap: () => Navigator.pop(context),
-                        child: Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: AppColors.dangerBright,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Icon(
-                            Icons.arrow_back,
-                            color: Colors.white,
-                            size: 24,
-                          ),
-                        ),
-                      ),
-                      // Title (centered)
-                      Expanded(
-                        child: Text(
-                          _getPageTitle(),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      // Spacer to balance back button
-                      const SizedBox(width: 44),
-                    ],
-                  ),
-                ),
-                
-                // Ticket content card
-                Expanded(
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      color: AppColors.surface,
-                      borderRadius: BorderRadius.circular(AppRadius.medium),
-                      border: Border.all(color: AppColors.border),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // Left: Millie Bot AI
+                  const Text(
+                    'Millie Bot AI',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                      // Header row with icon, title, and action buttons
+                  ),
+                  // Center: Logo in blue rounded square
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      border: Border.all(color: AppColors.accent, width: 2),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(AppRadius.small - 2),
+                      child: Image.asset(
+                        'assets/icon/logo.png',
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                  // Right: Dream Cloud
+                  const Text(
+                    'Dream Cloud',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Content area
+            Expanded(
+              child: Container(
+                color: AppColors.surface,
+                padding: const EdgeInsets.all(AppSpacing.sm),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(AppRadius.medium),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Column(
+                    children: [
+                      // Page header with back button and title
+                      Padding(
+                        padding: const EdgeInsets.all(AppSpacing.md),
+                        child: Row(
+                          children: [
+                            // Back button (orange)
+                            GestureDetector(
+                              onTap: () => Navigator.pop(context),
+                              child: Container(
+                                width: 44,
+                                height: 44,
+                                decoration: BoxDecoration(
+                                  color: AppColors.dangerBright,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.arrow_back,
+                                  color: Colors.white,
+                                  size: 24,
+                                ),
+                              ),
+                            ),
+                            // Title (centered)
+                            Expanded(
+                              child: Text(
+                                _getPageTitle(),
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            // Spacer to balance back button
+                            const SizedBox(width: 44),
+                          ],
+                        ),
+                      ),
+                      
+                      // Ticket content
+                      Expanded(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Header row with icon, title, and action buttons
                       Padding(
                         padding: const EdgeInsets.all(AppSpacing.md),
                         child: Row(
