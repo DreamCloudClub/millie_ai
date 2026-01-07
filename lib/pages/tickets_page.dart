@@ -819,20 +819,16 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Row(
                 children: [
-                  // Spacer for balance (matches refresh button width)
-                  const SizedBox(width: 44),
-                  // Title (centered)
-                  const Expanded(
-                    child: Text(
-                      'AI Tickets',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                  // Title (left-aligned)
+                  const Text(
+                    'AI Tickets',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
                     ),
                   ),
+                  const Spacer(),
                   // Daily refresh button (green) - clears all tickets
                     GestureDetector(
                       onTap: clearAllTickets,
