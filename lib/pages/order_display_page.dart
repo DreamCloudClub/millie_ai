@@ -593,7 +593,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
             _orderItems[index],
             style: const TextStyle(
               color: Colors.black,
-              fontSize: 16,
+              fontSize: 20,
               fontWeight: FontWeight.w500,
             ),
             textAlign: TextAlign.center,
