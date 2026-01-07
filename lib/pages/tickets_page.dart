@@ -1030,32 +1030,32 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                     GestureDetector(
                       onTap: _closeDetailView,
                       child: Container(
-                        width: 44,
-                        height: 44,
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
                           color: AppColors.dangerBright,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(AppRadius.small),
                         ),
                         child: const Icon(
                           Icons.arrow_back,
                           color: Colors.white,
-                          size: 24,
+                          size: 22,
                         ),
                       ),
                     ),
                     const SizedBox(width: AppSpacing.sm),
                     // Ticket icon
                     Container(
-                      width: 44,
-                      height: 44,
+                      width: 40,
+                      height: 40,
                       decoration: BoxDecoration(
                         color: AppColors.accent.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(AppRadius.small),
                       ),
                       child: const Icon(
                         Icons.receipt_long,
                         color: AppColors.accent,
-                        size: 24,
+                        size: 22,
                       ),
                     ),
                     const SizedBox(width: AppSpacing.sm),
@@ -1308,20 +1308,20 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                         _closeEditView();
                       },
                       child: Container(
-                        width: 44,
-                        height: 44,
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
                           color: AppColors.dangerBright,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(AppRadius.small),
                         ),
                         child: const Icon(
                           Icons.arrow_back,
                           color: Colors.white,
-                          size: 24,
+                          size: 22,
                         ),
                       ),
                     ),
-                    const SizedBox(width: AppSpacing.md),
+                    const SizedBox(width: AppSpacing.sm),
                     // Title
                     Expanded(
                       child: Text(
