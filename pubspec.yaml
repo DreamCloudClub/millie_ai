@@ -1,0 +1,49 @@
+name: millie_ai
+description: "Millie Face Tablet App - Robot display and task control"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ROS Bridge communication
+  web_socket_channel: ^2.4.0
+
+  # Screen/display management
+  wakelock_plus: ^1.1.1
+  screen_brightness: ^0.2.2
+
+  # HTTP for robot API
+  http: ^1.2.2
+
+  # Voice services (preserved for future STT/LLM/TTS)
+  flutter_webrtc: ^1.2.1          # Realtime WebRTC (backup option)
+  porcupine_flutter: ^3.0.5       # Wake word detection
+  just_audio: ^0.9.36             # Audio playback
+  flutter_dotenv: ^5.1.0          # Environment variables
+  permission_handler: ^11.3.1     # Mic permissions
+  path_provider: ^2.1.5           # File storage
+  shelf: ^1.4.0                   # HTTP server
+
+  # Audio recording for STT
+  record: ^6.0.0
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/.env
+    - assets/millie_android.ppn
+    - assets/icon/
