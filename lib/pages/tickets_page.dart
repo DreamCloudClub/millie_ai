@@ -1013,11 +1013,12 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
           ),
           child: Column(
             children: [
-              // Header with back button and title
+              // Single header row: back, icon, title, logo, edit, close, deliver, delete
               Padding(
                 padding: const EdgeInsets.all(AppSpacing.md),
                 child: Row(
                   children: [
+                    // Back button
                     GestureDetector(
                       onTap: _closeDetailView,
                       child: Container(
@@ -1034,32 +1035,11 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                         ),
                       ),
                     ),
-                    Expanded(
-                      child: Text(
-                        ticket.title.startsWith('Ticket #') 
-                            ? 'AI ${ticket.title}'
-                            : 'AI Ticket',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 44),
-                  ],
-                ),
-              ),
-              
-              // Ticket header with icon and action buttons
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                child: Row(
-                  children: [
+                    const SizedBox(width: AppSpacing.sm),
+                    // Ticket icon
                     Container(
-                      width: 48,
-                      height: 48,
+                      width: 44,
+                      height: 44,
                       decoration: BoxDecoration(
                         color: AppColors.accent.withOpacity(0.15),
                         borderRadius: BorderRadius.circular(12),
@@ -1067,27 +1047,50 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                       child: const Icon(
                         Icons.receipt_long,
                         color: AppColors.accent,
-                        size: 28,
+                        size: 24,
                       ),
                     ),
-                    const SizedBox(width: AppSpacing.md),
+                    const SizedBox(width: AppSpacing.sm),
+                    // Title
                     Expanded(
                       child: Text(
-                        ticket.locationName ?? ticket.title,
+                        ticket.title.startsWith('Ticket #') 
+                            ? 'AI ${ticket.title}'
+                            : 'AI Ticket',
                         style: const TextStyle(
-                          fontSize: 22,
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    // Logo (centered area)
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                        border: Border.all(color: AppColors.accent, width: 2),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(AppRadius.small - 2),
+                        child: Image.asset(
+                          'assets/icon/logo.png',
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    // Edit button
                     _buildDetailActionButton(
                       label: 'Edit',
                       color: AppColors.accent,
                       onTap: () => _openEditPage(ticket),
                     ),
                     const SizedBox(width: AppSpacing.xs),
+                    // Close/Open button
                     _buildDetailActionButton(
                       label: isOpen ? 'Close' : 'Open',
                       color: isOpen ? AppColors.dangerBright : AppColors.success,
@@ -1095,6 +1098,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                           ? () { _closeTicket(ticket); _closeDetailView(); }
                           : () => _reopenTicket(ticket),
                     ),
+                    // Deliver button (only for open)
                     if (isOpen) ...[
                       const SizedBox(width: AppSpacing.xs),
                       _buildDetailActionButton(
@@ -1105,6 +1109,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                       ),
                     ],
                     const SizedBox(width: AppSpacing.xs),
+                    // Delete button
                     GestureDetector(
                       onTap: () { _deleteTicket(ticket); _closeDetailView(); },
                       child: Container(
@@ -1126,7 +1131,7 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
                 ),
               ),
               
-              const SizedBox(height: AppSpacing.md),
+              const SizedBox(height: AppSpacing.sm),
               
               // Divider
               Container(
