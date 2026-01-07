@@ -819,23 +819,8 @@ class TicketsPageState extends State<TicketsPage> with AutomaticKeepAliveClientM
               padding: const EdgeInsets.all(AppSpacing.md),
               child: Row(
                 children: [
-                  // Back button (orange)
-                  GestureDetector(
-                    onTap: widget.onBack,
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: AppColors.dangerBright,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                  ),
+                  // Spacer for balance (matches refresh button width)
+                  const SizedBox(width: 44),
                   // Title (centered)
                   const Expanded(
                     child: Text(
