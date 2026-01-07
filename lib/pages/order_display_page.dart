@@ -583,23 +583,26 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   }
   
   Widget _buildTicketContent() {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      itemCount: _orderItems.length,
-      itemBuilder: (context, index) {
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: Text(
-            _orderItems[index],
-            style: const TextStyle(
-              color: Colors.black,
-              fontSize: 20,
-              fontWeight: FontWeight.w500,
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: _orderItems.map((item) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              item,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 20,
+                fontWeight: FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
             ),
-            textAlign: TextAlign.center,
-          ),
-        );
-      },
+          )).toList(),
+        ),
+      ),
     );
   }
 }
