@@ -109,9 +109,9 @@ class _TicketViewPageState extends State<TicketViewPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: AppColors.surface,
-      child: SafeArea(
+    return Scaffold(
+      backgroundColor: AppColors.surface,
+      body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.sm),
           child: Container(
