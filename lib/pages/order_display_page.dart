@@ -581,7 +581,7 @@ class OrderDisplayPageState extends State<OrderDisplayPage>
   Widget _buildTicketContent() {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),  // More bottom padding
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),  // Balanced padding
         child: Column(
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
