@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import '../models/ticket.dart';
+import '../services/local_cache_service.dart';
 
 /// Robot pose in map coordinates
 class RobotPose {
@@ -154,247 +154,352 @@ class ConversationStep {
 }
 
 /// Action definition (prompt configuration for AI conversations)
+/// Note: All actions use the current default agent - no per-action agent selection
 class ActionDefinition {
   final String name;
   final String description;
-  final String agentName;          // Reference to AI Agent template
-  final String context;            // Additional context for this action
-  final String systemInstructions; // AI behavior rules
-  final String openingGreeting;    // What the robot says first
+  final String recipientName;      // If set, confirm identity before delivering message
+  final String openingGreeting;    // What the robot says first (after confirmation if recipientName set)
   final List<ConversationStep> steps;  // Follow-up questions/statements
   final String confirmation;       // Closing/confirmation statement
   final bool isDefault;            // Default action for wake word / play button
-  
+  final String source;             // 'user' or 'robot'
+
   ActionDefinition({
     required this.name,
     this.description = '',
-    this.agentName = '',
-    this.context = '',
-    this.systemInstructions = '',
+    this.recipientName = '',
     this.openingGreeting = '',
     this.steps = const [],
     this.confirmation = '',
     this.isDefault = false,
+    this.source = 'user',
   });
-  
+
   Map<String, dynamic> toJson() => {
     'name': name,
     'description': description,
-    'agent_name': agentName,
-    'context': context,
-    'system_instructions': systemInstructions,
+    'recipient_name': recipientName,
     'opening_greeting': openingGreeting,
     'steps': steps.map((s) => s.toJson()).toList(),
     'confirmation': confirmation,
     'is_default': isDefault,
+    'source': source,
   };
-  
+
   factory ActionDefinition.fromJson(Map<String, dynamic> json) => ActionDefinition(
     name: json['name'] as String,
     description: json['description'] as String? ?? '',
-    agentName: json['agent_name'] as String? ?? '',
-    context: json['context'] as String? ?? '',
-    systemInstructions: json['system_instructions'] as String? ?? json['opening_prompt'] as String? ?? '',
+    recipientName: json['recipient_name'] as String? ?? '',
     openingGreeting: json['opening_greeting'] as String? ?? '',
     steps: (json['steps'] as List<dynamic>?)
         ?.map((s) => ConversationStep.fromJson(s as Map<String, dynamic>))
         .toList() ?? [],
     confirmation: json['confirmation'] as String? ?? '',
     isDefault: json['is_default'] as bool? ?? false,
+    source: json['source'] as String? ?? 'user',
   );
-  
+
   ActionDefinition copyWith({
     String? name,
     String? description,
-    String? agentName,
-    String? context,
-    String? systemInstructions,
+    String? recipientName,
     String? openingGreeting,
     List<ConversationStep>? steps,
     String? confirmation,
     bool? isDefault,
+    String? source,
   }) => ActionDefinition(
     name: name ?? this.name,
     description: description ?? this.description,
-    agentName: agentName ?? this.agentName,
-    context: context ?? this.context,
-    systemInstructions: systemInstructions ?? this.systemInstructions,
+    recipientName: recipientName ?? this.recipientName,
     openingGreeting: openingGreeting ?? this.openingGreeting,
     steps: steps ?? this.steps,
     confirmation: confirmation ?? this.confirmation,
     isDefault: isDefault ?? this.isDefault,
+    source: source ?? this.source,
   );
 }
 
-/// Daily hours for company info
-class DailyHoursData {
-  final String day;
-  final String? openTime;
-  final String? closeTime;
-  final bool isClosed;
-  
-  DailyHoursData({
-    required this.day,
-    this.openTime,
-    this.closeTime,
-    this.isClosed = false,
-  });
-  
-  Map<String, dynamic> toJson() => {
-    'day': day,
-    'open_time': openTime,
-    'close_time': closeTime,
-    'is_closed': isClosed,
-  };
-  
-  factory DailyHoursData.fromJson(Map<String, dynamic> json) => DailyHoursData(
-    day: json['day'] as String,
-    openTime: json['open_time'] as String?,
-    closeTime: json['close_time'] as String?,
-    isClosed: json['is_closed'] as bool? ?? false,
+/// A step in a history entry
+class HistoryStep {
+  final String type;   // 'navigate', 'action', 'display'
+  final String value;  // waypoint name, action name, display name
+
+  HistoryStep({required this.type, required this.value});
+
+  Map<String, dynamic> toJson() => {'type': type, 'value': value};
+
+  factory HistoryStep.fromJson(Map<String, dynamic> json) => HistoryStep(
+    type: json['type'] as String? ?? '',
+    value: json['value'] as String? ?? '',
   );
 }
 
-/// Company policy
-class PolicyData {
-  final String title;
-  final String description;
-  
-  PolicyData({
-    required this.title,
-    this.description = '',
+/// History entry for workflow execution
+class HistoryEntry {
+  final DateTime timestamp;
+  final List<HistoryStep> steps;
+  final String source;  // 'user' or 'robot'
+
+  HistoryEntry({
+    required this.timestamp,
+    required this.steps,
+    this.source = 'user',
   });
-  
+
   Map<String, dynamic> toJson() => {
-    'title': title,
-    'description': description,
+    'timestamp': timestamp.toIso8601String(),
+    'steps': steps.map((s) => s.toJson()).toList(),
+    'source': source,
   };
-  
-  factory PolicyData.fromJson(Map<String, dynamic> json) => PolicyData(
-    title: json['title'] as String? ?? '',
-    description: json['description'] as String? ?? '',
+
+  factory HistoryEntry.fromJson(Map<String, dynamic> json) => HistoryEntry(
+    timestamp: DateTime.parse(json['timestamp'] as String),
+    steps: (json['steps'] as List<dynamic>?)
+        ?.map((s) => HistoryStep.fromJson(s as Map<String, dynamic>))
+        .toList() ?? [],
+    source: json['source'] as String? ?? 'user',
   );
+
+  String get description => steps.map((s) => s.value).join(' → ');
 }
 
 /// AI Agent definition (reusable persona template)
 class AgentDefinition {
   final String name;
-  final String description;
-  final String systemInstructions;
+  final String faceId;
+  final String voice;
+  final String voiceMode; // 'turn_taking' or 'realtime'
   final String personality;
-  final String voiceStyle;
-  final String knowledgeFocus;
+  final String introMessage;
   final bool isDefault;
-  
+
   AgentDefinition({
     required this.name,
-    this.description = '',
-    this.systemInstructions = '',
+    this.faceId = '',
+    this.voice = 'nova',
+    this.voiceMode = 'turn_taking',
     this.personality = '',
-    this.voiceStyle = '',
-    this.knowledgeFocus = '',
+    this.introMessage = '',
     this.isDefault = false,
   });
-  
+
   Map<String, dynamic> toJson() => {
     'name': name,
-    'description': description,
-    'system_instructions': systemInstructions,
+    'face_id': faceId,
+    'voice': voice,
+    'voice_mode': voiceMode,
     'personality': personality,
-    'voice_style': voiceStyle,
-    'knowledge_focus': knowledgeFocus,
+    'intro_message': introMessage,
     'is_default': isDefault,
   };
-  
+
   factory AgentDefinition.fromJson(Map<String, dynamic> json) => AgentDefinition(
     name: json['name'] as String? ?? '',
-    description: json['description'] as String? ?? '',
-    systemInstructions: json['system_instructions'] as String? ?? '',
+    faceId: json['face_id'] as String? ?? '',
+    voice: json['voice'] as String? ?? 'nova',
+    voiceMode: json['voice_mode'] as String? ?? 'turn_taking',
     personality: json['personality'] as String? ?? '',
-    voiceStyle: json['voice_style'] as String? ?? '',
-    knowledgeFocus: json['knowledge_focus'] as String? ?? '',
+    introMessage: json['intro_message'] as String? ?? '',
     isDefault: json['is_default'] as bool? ?? false,
   );
-  
+
   AgentDefinition copyWith({
     String? name,
-    String? description,
-    String? systemInstructions,
+    String? faceId,
+    String? voice,
+    String? voiceMode,
     String? personality,
-    String? voiceStyle,
-    String? knowledgeFocus,
+    String? introMessage,
     bool? isDefault,
   }) => AgentDefinition(
     name: name ?? this.name,
-    description: description ?? this.description,
-    systemInstructions: systemInstructions ?? this.systemInstructions,
+    faceId: faceId ?? this.faceId,
+    voice: voice ?? this.voice,
+    voiceMode: voiceMode ?? this.voiceMode,
     personality: personality ?? this.personality,
-    voiceStyle: voiceStyle ?? this.voiceStyle,
-    knowledgeFocus: knowledgeFocus ?? this.knowledgeFocus,
+    introMessage: introMessage ?? this.introMessage,
     isDefault: isDefault ?? this.isDefault,
   );
 }
 
-/// Company info data from robot
-class CompanyInfoData {
-  // Robot identity
-  final String robotName;
-  final String robotIdentity;
-  final String basePersonality;
-  final String baseSystemInstructions;
-  final String voice;
-  
-  // Business info
-  final String companyName;
-  final String address;
-  final String phone;
-  final List<DailyHoursData> hours;
-  final List<PolicyData> policies;
-  
-  CompanyInfoData({
-    this.robotName = '',
-    this.robotIdentity = '',
-    this.basePersonality = '',
-    this.baseSystemInstructions = '',
-    this.voice = 'nova',
-    this.companyName = '',
-    this.address = '',
-    this.phone = '',
-    this.hours = const [],
-    this.policies = const [],
+/// User profile data
+class UserProfile {
+  final String username;
+  final String pronouns;
+  final String bio;
+
+  UserProfile({
+    this.username = '',
+    this.pronouns = '',
+    this.bio = '',
   });
-  
-  bool get isEmpty => robotName.isEmpty && companyName.isEmpty && address.isEmpty && phone.isEmpty && 
-      hours.isEmpty && policies.isEmpty;
-  
+
   Map<String, dynamic> toJson() => {
-    'robot_name': robotName,
-    'robot_identity': robotIdentity,
-    'base_personality': basePersonality,
-    'base_system_instructions': baseSystemInstructions,
-    'voice': voice,
-    'company_name': companyName,
-    'address': address,
-    'phone': phone,
-    'hours': hours.map((h) => h.toJson()).toList(),
-    'policies': policies.map((p) => p.toJson()).toList(),
+    'username': username,
+    'pronouns': pronouns,
+    'bio': bio,
   };
-  
-  factory CompanyInfoData.fromJson(Map<String, dynamic> json) => CompanyInfoData(
-    robotName: json['robot_name'] as String? ?? '',
-    robotIdentity: json['robot_identity'] as String? ?? '',
-    basePersonality: json['base_personality'] as String? ?? '',
-    baseSystemInstructions: json['base_system_instructions'] as String? ?? '',
-    voice: json['voice'] as String? ?? 'nova',
-    companyName: json['company_name'] as String? ?? '',
-    address: json['address'] as String? ?? '',
-    phone: json['phone'] as String? ?? '',
-    hours: (json['hours'] as List<dynamic>?)
-        ?.map((h) => DailyHoursData.fromJson(h as Map<String, dynamic>))
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
+    username: json['username'] as String? ?? '',
+    pronouns: json['pronouns'] as String? ?? '',
+    bio: json['bio'] as String? ?? '',
+  );
+
+  UserProfile copyWith({
+    String? username,
+    String? pronouns,
+    String? bio,
+  }) => UserProfile(
+    username: username ?? this.username,
+    pronouns: pronouns ?? this.pronouns,
+    bio: bio ?? this.bio,
+  );
+}
+
+/// A person the robot knows about
+class KnownPerson {
+  final String name;
+  final String relationship; // e.g., "owner", "friend", "coworker", "visitor"
+  final List<String> notes; // things to remember about this person
+  final String? interests; // their interests
+  final DateTime? lastSeen;
+
+  KnownPerson({
+    required this.name,
+    this.relationship = '',
+    this.notes = const [],
+    this.interests,
+    this.lastSeen,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'relationship': relationship,
+    'notes': notes,
+    'interests': interests,
+    'last_seen': lastSeen?.toIso8601String(),
+  };
+
+  factory KnownPerson.fromJson(Map<String, dynamic> json) => KnownPerson(
+    name: json['name'] as String? ?? '',
+    relationship: json['relationship'] as String? ?? '',
+    notes: (json['notes'] as List<dynamic>?)?.map((n) => n as String).toList() ?? [],
+    interests: json['interests'] as String?,
+    lastSeen: json['last_seen'] != null ? DateTime.tryParse(json['last_seen'] as String) : null,
+  );
+
+  KnownPerson copyWith({
+    String? name,
+    String? relationship,
+    List<String>? notes,
+    String? interests,
+    DateTime? lastSeen,
+  }) => KnownPerson(
+    name: name ?? this.name,
+    relationship: relationship ?? this.relationship,
+    notes: notes ?? this.notes,
+    interests: interests ?? this.interests,
+    lastSeen: lastSeen ?? this.lastSeen,
+  );
+}
+
+/// A note/memory the robot has saved
+class MemoryNote {
+  final String id;
+  final String content;
+  final String category; // e.g., "observation", "preference", "fact", "event"
+  final DateTime createdAt;
+
+  MemoryNote({
+    required this.id,
+    required this.content,
+    this.category = 'general',
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'content': content,
+    'category': category,
+    'created_at': createdAt.toIso8601String(),
+  };
+
+  factory MemoryNote.fromJson(Map<String, dynamic> json) => MemoryNote(
+    id: json['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
+    content: json['content'] as String? ?? '',
+    category: json['category'] as String? ?? 'general',
+    createdAt: json['created_at'] != null ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now() : DateTime.now(),
+  );
+}
+
+/// Owner profile - notes about the primary user
+class OwnerProfile {
+  final List<String> notes;
+
+  OwnerProfile({
+    this.notes = const [],
+  });
+
+  bool get isEmpty => notes.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'notes': notes,
+  };
+
+  factory OwnerProfile.fromJson(Map<String, dynamic> json) => OwnerProfile(
+    notes: (json['notes'] as List<dynamic>?)?.map((n) => n as String).toList() ?? [],
+  );
+
+  OwnerProfile copyWith({
+    List<String>? notes,
+  }) => OwnerProfile(
+    notes: notes ?? this.notes,
+  );
+}
+
+/// All memories the robot has
+class MemoryData {
+  final OwnerProfile owner;
+  final List<KnownPerson> people;
+  final List<MemoryNote> notes;
+
+  MemoryData({
+    OwnerProfile? owner,
+    this.people = const [],
+    this.notes = const [],
+  }) : owner = owner ?? OwnerProfile();
+
+  bool get isEmpty => owner.isEmpty && people.isEmpty && notes.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'owner': owner.toJson(),
+    'people': people.map((p) => p.toJson()).toList(),
+    'notes': notes.map((n) => n.toJson()).toList(),
+  };
+
+  factory MemoryData.fromJson(Map<String, dynamic> json) => MemoryData(
+    owner: json['owner'] != null
+        ? OwnerProfile.fromJson(json['owner'] as Map<String, dynamic>)
+        : OwnerProfile(),
+    people: (json['people'] as List<dynamic>?)
+        ?.map((p) => KnownPerson.fromJson(p as Map<String, dynamic>))
         .toList() ?? [],
-    policies: (json['policies'] as List<dynamic>?)
-        ?.map((p) => PolicyData.fromJson(p as Map<String, dynamic>))
+    notes: (json['notes'] as List<dynamic>?)
+        ?.map((n) => MemoryNote.fromJson(n as Map<String, dynamic>))
         .toList() ?? [],
+  );
+
+  MemoryData copyWith({
+    OwnerProfile? owner,
+    List<KnownPerson>? people,
+    List<MemoryNote>? notes,
+  }) => MemoryData(
+    owner: owner ?? this.owner,
+    people: people ?? this.people,
+    notes: notes ?? this.notes,
   );
 }
 
@@ -411,7 +516,9 @@ class RosBridge {
   List<SavedSequence> sequences = [];
   List<ActionDefinition> actions = [];
   List<AgentDefinition> agents = [];
-  CompanyInfoData? companyInfo;
+  List<HistoryEntry> history = [];
+  UserProfile? userProfile;
+  MemoryData? memories;
   RobotPose? currentPose;
   MapData? _cachedMapData;
   NavStatus _lastNavStatus = NavStatus.idle;
@@ -424,12 +531,13 @@ class RosBridge {
   final List<void Function(List<SavedSequence>)> _sequenceListeners = [];
   final List<void Function(List<ActionDefinition>)> _actionListeners = [];
   final List<void Function(List<AgentDefinition>)> _agentListeners = [];
+  final List<void Function(UserProfile)> _userProfileListeners = [];
   final List<void Function(RobotPose)> _poseListeners = [];
   final List<void Function(MapData)> _mapListeners = [];
   final List<void Function(NavStatus)> _navStatusListeners = [];
   final List<void Function(LaserScan)> _laserScanListeners = [];
-  final List<void Function(CompanyInfoData)> _companyInfoListeners = [];
-  final List<void Function(List<Map<String, dynamic>>)> _ticketListeners = [];
+  final List<void Function(MemoryData)> _memoryListeners = [];
+  final List<void Function(List<HistoryEntry>)> _historyListeners = [];
   final List<void Function(String, int, int, List<Map<String, dynamic>>?)> _workflowStatusListeners = [];
   
   /// Add a waypoint listener. Receives current data immediately if available.
@@ -470,7 +578,20 @@ class RosBridge {
   void removeActionListener(void Function(List<ActionDefinition>) callback) {
     _actionListeners.remove(callback);
   }
-  
+
+  /// Add a history listener. Receives current data immediately if available.
+  void addHistoryListener(void Function(List<HistoryEntry>) callback) {
+    _historyListeners.add(callback);
+    if (history.isNotEmpty) {
+      print('📍 [MultiListener] New history listener, sending ${history.length} cached entries');
+      callback(history);
+    }
+  }
+
+  void removeHistoryListener(void Function(List<HistoryEntry>) callback) {
+    _historyListeners.remove(callback);
+  }
+
   /// Add an agent listener. Receives current data immediately if available.
   void addAgentListener(void Function(List<AgentDefinition>) callback) {
     _agentListeners.add(callback);
@@ -483,7 +604,20 @@ class RosBridge {
   void removeAgentListener(void Function(List<AgentDefinition>) callback) {
     _agentListeners.remove(callback);
   }
-  
+
+  /// Add a user profile listener. Receives current data immediately if available.
+  void addUserProfileListener(void Function(UserProfile) callback) {
+    _userProfileListeners.add(callback);
+    if (userProfile != null) {
+      print('📍 [MultiListener] New user profile listener, sending cached profile');
+      callback(userProfile!);
+    }
+  }
+
+  void removeUserProfileListener(void Function(UserProfile) callback) {
+    _userProfileListeners.remove(callback);
+  }
+
   /// Add a pose listener. Receives current pose immediately if available.
   void addPoseListener(void Function(RobotPose) callback) {
     _poseListeners.add(callback);
@@ -541,29 +675,20 @@ class RosBridge {
   
   /// Direct access to current laser scan
   LaserScan? get laserScan => _currentLaserScan;
-  
-  /// Add a company info listener. Receives current data immediately if available.
-  void addCompanyInfoListener(void Function(CompanyInfoData) callback) {
-    _companyInfoListeners.add(callback);
-    if (companyInfo != null) {
-      print('📍 [MultiListener] New company info listener, sending cached data');
-      callback(companyInfo!);
+
+  /// Add a memory listener. Receives current data immediately if available.
+  void addMemoryListener(void Function(MemoryData) callback) {
+    _memoryListeners.add(callback);
+    if (memories != null) {
+      print('📍 [MultiListener] New memory listener, sending cached memories');
+      callback(memories!);
     }
   }
-  
-  void removeCompanyInfoListener(void Function(CompanyInfoData) callback) {
-    _companyInfoListeners.remove(callback);
+
+  void removeMemoryListener(void Function(MemoryData) callback) {
+    _memoryListeners.remove(callback);
   }
-  
-  /// Add a ticket listener.
-  void addTicketListener(void Function(List<Map<String, dynamic>>) callback) {
-    _ticketListeners.add(callback);
-  }
-  
-  void removeTicketListener(void Function(List<Map<String, dynamic>>) callback) {
-    _ticketListeners.remove(callback);
-  }
-  
+
   /// Add a workflow status listener.
   void addWorkflowStatusListener(void Function(String, int, int, List<Map<String, dynamic>>?) callback) {
     _workflowStatusListeners.add(callback);
@@ -581,12 +706,26 @@ class RosBridge {
   void Function(bool)? onConnectionChange;
   void Function(NavStatus)? onNavStatusUpdate;
   void Function(String status, int step, int total, List<Map<String, dynamic>>? steps)? onWorkflowStatus;
-  void Function(ActionDefinition action, Ticket? ticket)? onActionExecute;  // When workflow triggers an action (with optional ticket for delivery)
+  void Function(ActionDefinition action)? onActionExecute;  // When workflow triggers an action
   void Function(String)? onDisplayCommand;  // When workflow triggers a display change
+  void Function()? onVoiceAgentStart;  // When controller requests voice agent start (play button)
+  void Function()? onLaunch;  // When controller requests launch (startup sequence)
+  void Function()? onStart;   // When controller requests start (quick face transition, no AI)
+  void Function()? onPlay;    // When controller requests play (start/resume AI conversation)
+  void Function()? onPause;   // When controller requests pause (stop AI conversation)
+  void Function()? onExit;    // When controller requests exit (return to launch page)
+  void Function()? onWanderStart;  // When controller requests silent wander mode start
+  void Function()? onWanderStop;   // When controller requests silent wander mode stop
+  void Function()? onRefresh; // When controller requests AI context refresh
+  void Function(String)? onSpeakCommand;  // When controller sends text for robot to speak
+  void Function(String)? onMotionDetectorStatus;  // Motion detector status changes (approaching, lost, etc.)
+  void Function(Map<String, dynamic>)? onPersonStatus;  // Person detection status from camera (JSON with distance, confidence, etc.)
+  void Function(Map<String, dynamic>)? onFollowingModeStatus;  // Following mode status (disabled, tracking, approaching, arrived, lost, searching)
+  void Function(String)? onWanderStatus;  // Wander status changes (navigating, searching, etc.)
+  void Function(String)? onLimiterStatus;  // Limiter blocked by obstacle (blocked_front, blocked_rear)
   void Function(LaserScan)? onLaserScanUpdate;
   void Function(List<SavedSequence>)? onSequencesUpdate;
   void Function(List<ActionDefinition>)? onActionsUpdate;
-  void Function(CompanyInfoData)? onCompanyInfoUpdate;
   void Function(List<AgentDefinition>)? onAgentsUpdate;
   
   // Map callback with caching (map is latched, only sent once)
@@ -607,6 +746,45 @@ class RosBridge {
   bool get isConnected => _connected;
 
   RosBridge(this.url);
+
+  /// Load cached data from SharedPreferences and notify listeners.
+  /// Call this before connect() to show cached data immediately.
+  Future<void> loadFromCache() async {
+    print('📦 Loading data from local cache...');
+
+    // Load agents
+    final cachedAgents = await LocalCacheService.loadAgents();
+    if (cachedAgents.isNotEmpty) {
+      agents = cachedAgents;
+      print('📦 Loaded ${agents.length} cached agents');
+      for (final listener in _agentListeners) {
+        listener(agents);
+      }
+      onAgentsUpdate?.call(agents);
+    }
+
+    // Load user profile
+    final cachedProfile = await LocalCacheService.loadUserProfile();
+    if (cachedProfile != null) {
+      userProfile = cachedProfile;
+      print('📦 Loaded cached user profile: ${userProfile!.username}');
+      for (final listener in _userProfileListeners) {
+        listener(userProfile!);
+      }
+    }
+
+    // Load memories
+    final cachedMemories = await LocalCacheService.loadMemories();
+    if (cachedMemories != null) {
+      memories = cachedMemories;
+      print('📦 Loaded cached memories');
+      for (final listener in _memoryListeners) {
+        listener(memories!);
+      }
+    }
+
+    print('📦 Cache loading complete');
+  }
 
   void connect() {
     // Cancel any existing reconnect timer
@@ -646,21 +824,49 @@ class RosBridge {
       
       // Subscribe to actions list
       _subscribe('/millie/actions', 'std_msgs/msg/String');
-      
-      // Subscribe to tickets list
-      _subscribe('/millie/tickets', 'std_msgs/msg/String');
-      
-      // Subscribe to company info
-      _subscribe('/millie/company_info', 'std_msgs/msg/String');
-      
+
+      // Subscribe to history
+      _subscribe('/millie/history', 'std_msgs/msg/String');
+
       // Subscribe to AI agents
       _subscribe('/millie/agents', 'std_msgs/msg/String');
-      
+
+      // Subscribe to user profile
+      _subscribe('/millie/user_profile', 'std_msgs/msg/String');
+
+      // Subscribe to memories
+      _subscribe('/millie/memories', 'std_msgs/msg/String');
+
       // Subscribe to workflow status
       _subscribe('/millie/workflow/status', 'std_msgs/msg/String');
       _subscribe('/millie/action/execute', 'std_msgs/msg/String');
       _subscribe('/millie/display', 'std_msgs/msg/String');
-      
+
+      // Subscribe to voice agent commands from controller
+      _subscribe('/millie/voice_agent/start', 'std_msgs/msg/String');
+
+      // Subscribe to mode commands (launch/play/pause) from controller
+      _subscribe('/millie/mode', 'std_msgs/msg/String');
+
+      // Subscribe to AI refresh command from controller
+      _subscribe('/millie/ai/refresh', 'std_msgs/msg/String');
+
+      // Subscribe to speak command from controller (robot speaks text)
+      _subscribe('/millie/speak', 'std_msgs/msg/String');
+
+      // Subscribe to motion detector status (for AI prompts in explore mode)
+      _subscribe('/motion_detector/status', 'std_msgs/msg/String');
+
+      // Subscribe to always-on person detection status from OAK-D
+      _subscribe('/oak/person_status', 'std_msgs/msg/String');
+      _subscribe('/person_follower/status', 'std_msgs/msg/String');
+
+      // Subscribe to wander status (for AI prompts in explore mode)
+      _subscribe('/wander/status', 'std_msgs/msg/String');
+
+      // Subscribe to limiter status (blocked by obstacle)
+      _subscribe('/limiter/status', 'std_msgs/msg/String');
+
       // Subscribe to map with TRANSIENT_LOCAL QoS to receive latched map
       _subscribeWithQos('/map', 'nav_msgs/msg/OccupancyGrid', durability: 'transient_local');
       
@@ -753,28 +959,103 @@ class RosBridge {
           _handleSequencesMessage(msg['msg']);
         } else if (topic == '/millie/actions') {
           _handleActionsMessage(msg['msg']);
-        } else if (topic == '/millie/tickets') {
-          _handleTicketsMessage(msg['msg']);
-        } else if (topic == '/millie/company_info') {
-          _handleCompanyInfoMessage(msg['msg']);
+        } else if (topic == '/millie/history') {
+          _handleHistoryMessage(msg['msg']);
         } else if (topic == '/millie/agents') {
           _handleAgentsMessage(msg['msg']);
+        } else if (topic == '/millie/user_profile') {
+          _handleUserProfileMessage(msg['msg']);
+        } else if (topic == '/millie/memories') {
+          _handleMemoriesMessage(msg['msg']);
         } else if (topic == '/millie/workflow/status') {
           _handleWorkflowStatusMessage(msg['msg']);
         } else if (topic == '/millie/action/execute') {
           _handleActionExecuteMessage(msg['msg']);
         } else if (topic == '/millie/display') {
           _handleDisplayMessage(msg['msg']);
+        } else if (topic == '/millie/voice_agent/start') {
+          _handleVoiceAgentStartMessage();
+        } else if (topic == '/millie/mode') {
+          _handleModeMessage(msg['msg']);
+        } else if (topic == '/millie/ai/refresh') {
+          _handleRefreshMessage();
+        } else if (topic == '/millie/speak') {
+          _handleSpeakMessage(msg['msg']);
         } else if (topic == '/map') {
           _handleMapMessage(msg['msg']);
         } else if (topic == '/navigate_to_pose/_action/status') {
           _handleNavStatusMessage(msg['msg']);
         } else if (topic == '/scan_filtered') {
           _handleLaserScanMessage(msg['msg']);
+        } else if (topic == '/motion_detector/status') {
+          _handleMotionDetectorStatus(msg['msg']);
+        } else if (topic == '/oak/person_status') {
+          _handlePersonStatus(msg['msg']);
+        } else if (topic == '/person_follower/status') {
+          _handleFollowingModeStatus(msg['msg']);
+        } else if (topic == '/wander/status') {
+          _handleWanderStatus(msg['msg']);
+        } else if (topic == '/limiter/status') {
+          _handleLimiterStatus(msg['msg']);
         }
       }
     } catch (e) {
       print("⚠️ Error parsing message: $e");
+    }
+  }
+
+  void _handleMotionDetectorStatus(Map<String, dynamic> msg) {
+    final status = msg['data'] as String? ?? '';
+    if (status.isNotEmpty) {
+      print("👀 [RosBridge] Motion detector: $status");
+      onMotionDetectorStatus?.call(status);
+    }
+  }
+
+  void _handlePersonStatus(Map<String, dynamic> msg) {
+    final data = msg['data'] as String? ?? '';
+    if (data.isNotEmpty) {
+      try {
+        final status = jsonDecode(data) as Map<String, dynamic>;
+        print("👤 [RosBridge] Person detected: ${status['person_detected']} (dist=${status['distance']})");
+        onPersonStatus?.call(status);
+      } catch (e) {
+        // Fallback for old string format
+        print("👤 [RosBridge] Person status: $data");
+        onPersonStatus?.call({'status': data, 'person_detected': false});
+      }
+    }
+  }
+
+  void _handleFollowingModeStatus(Map<String, dynamic> msg) {
+    final data = msg['data'] as String? ?? '';
+    if (data.isNotEmpty) {
+      try {
+        final status = jsonDecode(data) as Map<String, dynamic>;
+        final mode = status['status'] as String? ?? 'disabled';
+        print("🚶 [RosBridge] Following mode: $mode (detected=${status['person_detected']}, dist=${status['distance']})");
+        onFollowingModeStatus?.call(status);
+      } catch (e) {
+        // Fallback for old string format
+        print("🚶 [RosBridge] Following mode: $data");
+        onFollowingModeStatus?.call({'status': data, 'person_detected': false});
+      }
+    }
+  }
+
+  void _handleWanderStatus(Map<String, dynamic> msg) {
+    final status = msg['data'] as String? ?? '';
+    if (status.isNotEmpty) {
+      print("🚶 [RosBridge] Wander: $status");
+      onWanderStatus?.call(status);
+    }
+  }
+
+  void _handleLimiterStatus(Map<String, dynamic> msg) {
+    final status = msg['data'] as String? ?? '';
+    if (status.isNotEmpty) {
+      print("🚧 [RosBridge] Limiter: $status");
+      onLimiterStatus?.call(status);
     }
   }
   
@@ -860,15 +1141,8 @@ class RosBridge {
       final action = ActionDefinition.fromJson(data);
       print("🎯 Action execute received: ${action.name}");
       print("🎯 Action openingGreeting: '${action.openingGreeting}'");
-      
-      // Parse optional ticket context (for delivery actions)
-      Ticket? ticket;
-      if (data['ticket'] != null) {
-        ticket = Ticket.fromJson(data['ticket'] as Map<String, dynamic>);
-        print("📦 With ticket context: ${ticket.title}");
-      }
-      
-      onActionExecute?.call(action, ticket);
+
+      onActionExecute?.call(action);
     } catch (e) {
       print("⚠️ Error parsing action execute: $e");
     }
@@ -881,6 +1155,56 @@ class RosBridge {
       onDisplayCommand?.call(displayName);
     } catch (e) {
       print("⚠️ Error parsing display command: $e");
+    }
+  }
+
+  void _handleVoiceAgentStartMessage() {
+    print("🎤 Voice agent start command received from controller");
+    onVoiceAgentStart?.call();
+  }
+
+  void _handleModeMessage(Map<String, dynamic> msg) {
+    try {
+      final mode = msg['data'] as String;
+      print("🎮 Mode command received: $mode");
+      switch (mode) {
+        case 'launch':
+          onLaunch?.call();
+          break;
+        case 'start':
+          onStart?.call();
+          break;
+        case 'play':
+          onPlay?.call();
+          break;
+        case 'pause':
+          onPause?.call();
+          break;
+        case 'exit':
+          onExit?.call();
+          break;
+        case 'wander_start':
+          onWanderStart?.call();
+          break;
+        case 'wander_stop':
+          onWanderStop?.call();
+          break;
+      }
+    } catch (e) {
+      print("⚠️ Error parsing mode command: $e");
+    }
+  }
+
+  void _handleRefreshMessage() {
+    print("🔄 AI refresh command received from controller");
+    onRefresh?.call();
+  }
+
+  void _handleSpeakMessage(Map<String, dynamic> msg) {
+    final text = msg['data'] as String? ?? '';
+    if (text.isNotEmpty) {
+      print("🔊 Speak command from controller: $text");
+      onSpeakCommand?.call(text);
     }
   }
 
@@ -939,23 +1263,7 @@ class RosBridge {
       print("⚠️ Error parsing sequences: $e");
     }
   }
-  
-  void _handleTicketsMessage(Map<String, dynamic> msg) {
-    try {
-      final data = jsonDecode(msg['data']);
-      final tickets = (data['tickets'] as List)
-          .map((t) => t as Map<String, dynamic>)
-          .toList();
-      
-      // Notify all ticket listeners
-      for (final listener in _ticketListeners) {
-        listener(tickets);
-      }
-    } catch (e) {
-      print("⚠️ Error parsing tickets: $e");
-    }
-  }
-  
+
   void _handleActionsMessage(Map<String, dynamic> msg) {
     try {
       final data = jsonDecode(msg['data']);
@@ -979,53 +1287,97 @@ class RosBridge {
       print("⚠️ Error parsing actions: $e");
     }
   }
-  
-  void _handleCompanyInfoMessage(Map<String, dynamic> msg) {
+
+  void _handleHistoryMessage(Map<String, dynamic> msg) {
     try {
       final data = jsonDecode(msg['data']);
-      final info = data['company_info'] as Map<String, dynamic>?;
-      if (info != null) {
-        // Store in central storage
-        companyInfo = CompanyInfoData.fromJson(info);
-        print('📍 [RosBridge] Company info updated: ${companyInfo?.companyName}, notifying ${_companyInfoListeners.length} listeners');
-        
-        // Notify multi-listeners
-        for (final listener in _companyInfoListeners) {
-          listener(companyInfo!);
-        }
-        
-        // Legacy callback (backward compatibility)
-        onCompanyInfoUpdate?.call(companyInfo!);
+      final parsedHistory = (data['history'] as List)
+          .map((h) => HistoryEntry.fromJson(h as Map<String, dynamic>))
+          .toList();
+
+      history = parsedHistory;
+      print('📍 [RosBridge] History updated: ${history.length} entries');
+
+      for (final listener in _historyListeners) {
+        listener(history);
       }
     } catch (e) {
-      print("⚠️ Error parsing company info: $e");
+      print("⚠️ Error parsing history: $e");
     }
   }
-  
+
   void _handleAgentsMessage(Map<String, dynamic> msg) {
     try {
       final data = jsonDecode(msg['data']);
       final parsedAgents = (data['agents'] as List)
           .map((a) => AgentDefinition.fromJson(a as Map<String, dynamic>))
           .toList();
-      
+
       // Store in central storage
       agents = parsedAgents;
-      
+
+      // Save to local cache
+      LocalCacheService.saveAgents(agents);
+
       print('📍 [RosBridge] Agents updated: ${agents.length} agents, notifying ${_agentListeners.length} listeners');
-      
+
       // Notify multi-listeners
       for (final listener in _agentListeners) {
         listener(agents);
       }
-      
+
       // Legacy callback (backward compatibility)
       onAgentsUpdate?.call(agents);
     } catch (e) {
       print("⚠️ Error parsing agents: $e");
     }
   }
-  
+
+  void _handleUserProfileMessage(Map<String, dynamic> msg) {
+    try {
+      final data = jsonDecode(msg['data']);
+      final profileData = data['user_profile'] as Map<String, dynamic>?;
+      if (profileData != null) {
+        userProfile = UserProfile.fromJson(profileData);
+
+        // Save to local cache
+        LocalCacheService.saveUserProfile(userProfile!);
+
+        print('📍 [RosBridge] User profile updated: ${userProfile!.username}');
+
+        // Notify listeners
+        for (final listener in _userProfileListeners) {
+          listener(userProfile!);
+        }
+      }
+    } catch (e) {
+      print("⚠️ Error parsing user profile: $e");
+    }
+  }
+
+  void _handleMemoriesMessage(Map<String, dynamic> msg) {
+    try {
+      final data = jsonDecode(msg['data']);
+      final memoryData = data['memories'] as Map<String, dynamic>?;
+      if (memoryData != null) {
+        // Store in central storage
+        memories = MemoryData.fromJson(memoryData);
+
+        // Save to local cache
+        LocalCacheService.saveMemories(memories!);
+
+        print('📍 [RosBridge] Memories updated: ${memories!.owner.notes.length} owner notes, ${memories!.people.length} people, ${memories!.notes.length} notes');
+
+        // Notify multi-listeners
+        for (final listener in _memoryListeners) {
+          listener(memories!);
+        }
+      }
+    } catch (e) {
+      print("⚠️ Error parsing memories: $e");
+    }
+  }
+
   void _handleLaserScanMessage(Map<String, dynamic> msg) {
     try {
       final angleMin = (msg['angle_min'] as num?)?.toDouble() ?? -3.14;
@@ -1271,11 +1623,12 @@ class RosBridge {
   }
   
   /// Execute a workflow (navigation + speak steps)
-  void publishWorkflow(List<Map<String, String>> steps, {Ticket? ticket}) {
-    final Map<String, dynamic> data = {'steps': steps};
-    if (ticket != null) {
-      data['ticket'] = ticket.toJson();
-    }
+  /// History is logged on the robot when workflow is received
+  void publishWorkflow(List<Map<String, String>> steps, {String source = 'user'}) {
+    final Map<String, dynamic> data = {
+      'steps': steps,
+      'source': source,
+    };
     final jsonStr = jsonEncode(data);
     _publishSimple("/millie/workflow/execute", jsonStr);
   }
@@ -1325,8 +1678,12 @@ class RosBridge {
   }
   
   /// Notify robot that an action is complete
-  void publishActionComplete(String actionName) {
-    _publishSimple("/millie/action/complete", actionName);
+  void publishActionComplete(String actionName, {bool delivered = true}) {
+    final data = jsonEncode({
+      'name': actionName,
+      'delivered': delivered,
+    });
+    _publishSimple("/millie/action/complete", data);
   }
   
   /// Save current robot position as a waypoint
@@ -1367,34 +1724,7 @@ class RosBridge {
   void requestSequences() {
     _publishSimple("/millie/sequence/list", "request");
   }
-  
-  /// Request tickets from robot
-  void requestTickets() {
-    _publishSimple("/millie/ticket/list", "request");
-  }
-  
-  /// Save a ticket to the robot
-  void publishSaveTicket(Map<String, dynamic> ticketJson) {
-    final json = jsonEncode(ticketJson);
-    _publishSimple("/millie/ticket/save", json);
-  }
-  
-  /// Delete a ticket from the robot
-  void publishDeleteTicket(String ticketId) {
-    _publishSimple("/millie/ticket/delete", ticketId);
-  }
-  
-  /// Clear all tickets on the robot
-  void publishClearAllTickets() {
-    _publishSimple("/millie/ticket/clear", "all");
-  }
-  
-  /// Update a ticket on the robot
-  void publishUpdateTicket(Map<String, dynamic> ticketJson) {
-    final json = jsonEncode(ticketJson);
-    _publishSimple("/millie/ticket/update", json);
-  }
-  
+
   /// Save a sequence to the robot
   void publishSaveSequence(String name, List<String> waypointNames) {
     final json = jsonEncode({
@@ -1421,7 +1751,26 @@ class RosBridge {
   void requestActions() {
     _publishSimple("/millie/action/list", "request");
   }
-  
+
+  /// Request history from robot
+  void requestHistory() {
+    _publishSimple("/millie/history/list", "request");
+  }
+
+  /// Clear all history on robot
+  void publishClearHistory() {
+    _publishSimple("/millie/history/clear", "clear");
+    history.clear();
+    for (final listener in _historyListeners) {
+      listener(history);
+    }
+  }
+
+  /// Delete a specific history entry by timestamp
+  void publishDeleteHistoryEntry(String timestamp) {
+    _publishSimple("/millie/history/delete", timestamp);
+  }
+
   /// Save an action to the robot
   void publishSaveAction(ActionDefinition action) {
     final json = jsonEncode(action.toJson());
@@ -1440,19 +1789,7 @@ class RosBridge {
     });
     _publishSimple("/millie/action/reorder", json);
   }
-  
-  /// Save company info to the robot
-  void publishSaveCompanyInfo(CompanyInfoData info) {
-    final json = jsonEncode(info.toJson());
-    print("📤 Publishing company info: $json");
-    _publishSimple("/millie/company_info/save", json);
-  }
-  
-  /// Request company info from robot
-  void requestCompanyInfo() {
-    _publishSimple("/millie/company_info/list", "");
-  }
-  
+
   /// Save an AI agent to the robot
   void publishSaveAgent(AgentDefinition agent) {
     final json = jsonEncode(agent.toJson());
@@ -1469,7 +1806,31 @@ class RosBridge {
   void requestAgents() {
     _publishSimple("/millie/agent/list", "");
   }
-  
+
+  /// Save user profile to the robot
+  void publishSaveUserProfile(UserProfile profile) {
+    final json = jsonEncode(profile.toJson());
+    print("📤 Publishing user profile: $json");
+    _publishSimple("/millie/user_profile/save", json);
+  }
+
+  /// Request user profile from robot
+  void requestUserProfile() {
+    _publishSimple("/millie/user_profile/list", "");
+  }
+
+  /// Save memories to the robot
+  void publishSaveMemories(MemoryData memoryData) {
+    final json = jsonEncode(memoryData.toJson());
+    print("📤 Publishing memories");
+    _publishSimple("/millie/memories/save", json);
+  }
+
+  /// Request memories from robot
+  void requestMemories() {
+    _publishSimple("/millie/memories/list", "");
+  }
+
   /// Cancel current navigation - calls Nav2 cancel service directly
   void publishCancelNav() {
     if (!_connected || _channel == null) return;
@@ -1492,16 +1853,22 @@ class RosBridge {
     print("🛑 Cancelling navigation");
   }
   
-  /// Emergency stop - cancel autonomous navigation
+  /// Emergency stop - cancel ALL autonomous movement
   void publishEstop() {
     if (!_connected || _channel == null) {
       print("⚠️ E-STOP FAILED - Not connected to ROSBridge!");
       return;
     }
-    
+
+    // Disable explore mode (wander + motion detector)
+    disableExploreMode();
+
     // Cancel Nav2 navigation via service call
     publishCancelNav();
-    
+
+    // Publish pause mode to stop all autonomous behaviors
+    _publishSimple("/millie/mode", "pause");
+
     // Send zero velocity to stop motion immediately
     final stopMsg = {
       "op": "publish",
@@ -1512,8 +1879,8 @@ class RosBridge {
       }
     };
     _channel!.sink.add(jsonEncode(stopMsg));
-    
-    print("🛑 E-STOP: Nav cancelled + zero velocity sent");
+
+    print("🛑 E-STOP: Explore disabled + Nav cancelled + zero velocity sent");
   }
   
   double _sin(double x) {
@@ -1543,6 +1910,147 @@ class RosBridge {
   void publishGreeterAgent() => _publishSimple("/millie/agent", "greeter");
   void publishBartenderAgent() => _publishSimple("/millie/agent", "bartender");
   void publishHostAgent() => _publishSimple("/millie/agent", "host");
+
+  // Voice state publishing (for controller sync)
+  void publishVoicePlaying() => _publishSimple("/millie/voice/state", "playing");
+  void publishVoicePaused() => _publishSimple("/millie/voice/state", "paused");
+  void publishVoiceIdle() => _publishSimple("/millie/voice/state", "idle");
+
+  // Workflow status publishing (for controller button sync fallback)
+  void publishWorkflowIdle() {
+    final msg = {
+      "op": "publish",
+      "topic": "/millie/workflow/status",
+      "msg": {
+        "data": '{"status": "idle", "step": 0, "total": 0}'
+      }
+    };
+    _channel?.sink.add(jsonEncode(msg));
+    print('📋 Published workflow idle status');
+  }
+
+  // Movement commands (for voice control)
+  // Mode commands (pause, wander_start, wander_stop, turn_and_resume, etc.)
+  void publishMode(String mode) => _publishSimple("/millie/mode", mode);
+
+  // Commands: forward, back, left, right, spin_left, spin_right, stop
+  void publishMove(String command) => _publishSimple("/millie/move", command);
+  void publishMoveForward() => publishMove("forward");
+  void publishMoveBack() => publishMove("back");
+  void publishTurnLeft() => publishMove("left");
+  void publishTurnRight() => publishMove("right");
+  void publishSpinLeft() => publishMove("spin_left");
+  void publishSpinRight() => publishMove("spin_right");
+  void publishMoveStop() => publishMove("stop");
+
+  // Wander mode control (wander only, no person detection)
+  void publishWanderEnable() => _publishBool("/wander/enable", true);
+  void publishWanderDisable() => _publishBool("/wander/enable", false);
+
+  // Person follower control (NN-based person detection)
+  void publishPersonFollowerEnable() => _publishBool("/person_follower/enable", true);
+  void publishPersonFollowerDisable() => _publishBool("/person_follower/enable", false);
+  void publishPersonFollower(bool enable) => _publishBool("/person_follower/enable", enable);
+
+  // Center on human control (camera tracking)
+  void publishCenterOnHuman(bool enable) => _publishBool("/oak/center_on_human", enable);
+
+  // ===========================================================================
+  // MODE CONTROL: Wander, Follow, Track, Patrol (mutually exclusive)
+  // Centralized mode manager - ALWAYS stops all before starting new mode
+  // ===========================================================================
+
+  /// Internal: Stop ALL movement modes (called before any mode switch)
+  void _stopAllMovementModes() {
+    print('🛑 Stopping all movement modes');
+    _publishBool("/wander/enable", false);
+    _publishBool("/person_follower/enable", false);
+    _publishBool("/oak/center_on_human", false);
+  }
+
+  /// Activate Wander mode (wander only, no person detection)
+  void activateWanderMode() {
+    print('🚶 Activating Wander mode (wander only)');
+    _stopAllMovementModes();
+    _publishBool("/wander/enable", true);
+  }
+
+  /// Deactivate Wander mode
+  void deactivateWanderMode() {
+    print('🛑 Deactivating Wander mode');
+    _publishBool("/wander/enable", false);
+  }
+
+  /// Activate Follow mode (person detection + following, no wander)
+  void activateFollowMode() {
+    print('👤 Activating Follow mode');
+    _stopAllMovementModes();
+    _publishBool("/person_follower/enable", true);
+  }
+
+  /// Deactivate Follow mode
+  void deactivateFollowMode() {
+    print('🛑 Deactivating Follow mode');
+    _publishBool("/person_follower/enable", false);
+  }
+
+  /// Activate Track mode (camera tracking, stationary)
+  void activateTrackMode() {
+    print('👁️ Activating Track mode (camera tracking)');
+    _stopAllMovementModes();
+    _publishBool("/oak/center_on_human", true);
+  }
+
+  /// Deactivate Track mode
+  void deactivateTrackMode() {
+    print('🛑 Deactivating Track mode');
+    _publishBool("/oak/center_on_human", false);
+  }
+
+  /// Activate Patrol mode (wander + person detection combined)
+  void activatePatrolMode() {
+    print('🔍 Activating Patrol mode (wander + follow)');
+    _stopAllMovementModes();
+    _publishBool("/wander/enable", true);
+    _publishBool("/person_follower/enable", true);
+  }
+
+  /// Deactivate Patrol mode
+  void deactivatePatrolMode() {
+    print('🛑 Deactivating Patrol mode');
+    _publishBool("/wander/enable", false);
+    _publishBool("/person_follower/enable", false);
+  }
+
+  /// Stop all autonomous modes (wander, follow, track)
+  void deactivateAllModes() {
+    _stopAllMovementModes();
+  }
+
+  // Legacy methods for backward compatibility
+  @Deprecated('Use activatePatrolMode() instead')
+  void enableExploreMode() {
+    activatePatrolMode();
+  }
+
+  @Deprecated('Use deactivatePatrolMode() instead')
+  void disableExploreMode() {
+    deactivatePatrolMode();
+  }
+
+  void _publishBool(String topic, bool value) {
+    if (_channel == null) {
+      print('⚠️ Cannot publish to $topic - rosbridge not connected');
+      return;
+    }
+    final msg = {
+      "op": "publish",
+      "topic": topic,
+      "msg": {"data": value}
+    };
+    _channel!.sink.add(jsonEncode(msg));
+    print('📤 Published $value to $topic');
+  }
 
   // ✅ shared helper
   void _publishSimple(String topic, String data) {

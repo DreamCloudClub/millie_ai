@@ -31,7 +31,7 @@ class LocationsPage extends StatefulWidget {
 }
 
 enum WorkflowState { editing, running, stopped }
-enum LeftPanelTab { points, actions, displays, tasks }
+enum LeftPanelTab { points, actions, robot, tasks }
 
 // Persisted tab selection across orientation changes
 LeftPanelTab? _persistedLeftTab;
@@ -124,30 +124,23 @@ class _LocationsPageState extends State<LocationsPage> {
   
   // Actions editing mode (prompts)
   bool _isEditingActions = false;
-  
-  // Displays editing mode
-  bool _isEditingDisplays = false;
-  
+
+  // Robot actions editing mode
+  bool _isEditingRobotActions = false;
+
+  // History editing mode
+  bool _isEditingHistory = false;
+
   // Editable actions list - prompts only (static to persist, loaded from robot)
   static List<ActionItem> _actions = [];
-  
+
   // Full action definitions from robot (for editing)
   static Map<String, ActionDefinition> _actionDefinitions = {};
-  
-  // Editable displays list (static to persist)
-  static List<ActionItem> _displays = [
-    const ActionItem(
-      name: 'Display Tickets',
-      type: StepType.display,
-      description: 'Show the tickets list page',
-    ),
-    const ActionItem(
-      name: 'Display Current Ticket',
-      type: StepType.display,
-      description: 'Show the ticket created during this task',
-    ),
-  ];
-  
+
+  // History from robot
+  List<HistoryEntry> _history = [];
+  void Function(List<HistoryEntry>)? _historyListener;
+
   // Workflow execution state (use static from parent for persistence)
   WorkflowState get _workflowState => LocationsPage.workflowState;
   set _workflowState(WorkflowState value) => LocationsPage.workflowState = value;
@@ -155,7 +148,7 @@ class _LocationsPageState extends State<LocationsPage> {
   set _currentStep(int value) => LocationsPage.currentStep = value;
   int get _totalSteps => LocationsPage.totalSteps;
   set _totalSteps(int value) => LocationsPage.totalSteps = value;
-  
+
   // Multi-listener references
   late final void Function(List<Waypoint>) _waypointListener;
   late final void Function(List<SavedSequence>) _sequenceListener;
@@ -229,7 +222,15 @@ class _LocationsPageState extends State<LocationsPage> {
       }
     };
     widget.rosBridge.addActionListener(_actionListener);
-    
+
+    // History listener
+    _historyListener = (entries) {
+      if (mounted) {
+        setState(() => _history = entries);
+      }
+    };
+    widget.rosBridge.addHistoryListener(_historyListener!);
+
     // Workflow status listener (multi-listener pattern)
     _workflowStatusListener = (status, step, total, steps) {
       if (mounted) {
@@ -318,6 +319,7 @@ class _LocationsPageState extends State<LocationsPage> {
     widget.rosBridge.requestWaypoints();
     widget.rosBridge.requestSequences();
     widget.rosBridge.requestActions();
+    widget.rosBridge.requestHistory();
   }
   
   @override
@@ -326,6 +328,9 @@ class _LocationsPageState extends State<LocationsPage> {
     widget.rosBridge.removeSequenceListener(_sequenceListener);
     widget.rosBridge.removeActionListener(_actionListener);
     widget.rosBridge.removeWorkflowStatusListener(_workflowStatusListener);
+    if (_historyListener != null) {
+      widget.rosBridge.removeHistoryListener(_historyListener!);
+    }
     super.dispose();
   }
 
@@ -375,16 +380,6 @@ class _LocationsPageState extends State<LocationsPage> {
             value: action.name,
             label: action.name,
           ));
-        } else {
-          // Could be a display - check displays list
-          final display = _displays.where((d) => d.name == name).firstOrNull;
-          if (display != null) {
-            steps.add(TaskStep(
-              type: display.type,
-              value: display.name,
-              label: display.name,
-            ));
-          }
         }
       }
     }
@@ -490,22 +485,23 @@ class _LocationsPageState extends State<LocationsPage> {
 
   void _executeSequence() {
     if (_taskSteps.isEmpty) return;
-    
+
     // Reset offset for fresh start
     LocationsPage.stepOffset = 0;
-    
+
     // Track first navigate step for location service
     final firstNavStep = _taskSteps.where((s) => s.type == StepType.navigate).firstOrNull;
     if (firstNavStep != null) {
       LocationService.instance.setNavigatingTo(firstNavStep.value);
     }
-    
+
     // Send full workflow to robot - map step types to robot format
+    // History is recorded in publishWorkflow()
     final steps = _taskSteps.map((step) => <String, String>{
       'type': _mapStepTypeForRobot(step.type),
       'value': step.value,
     }).toList();
-    
+
     widget.rosBridge.publishWorkflow(steps);
     setState(() {
       _workflowState = WorkflowState.running;
@@ -623,9 +619,9 @@ class _LocationsPageState extends State<LocationsPage> {
             const SizedBox(width: AppSpacing.xs),
             _buildTabButton('Actions', LeftPanelTab.actions, compact: isPortrait),
             const SizedBox(width: AppSpacing.xs),
-            _buildTabButton('Displays', LeftPanelTab.displays, compact: isPortrait),
-            const SizedBox(width: AppSpacing.xs),
             _buildTabButton('Tasks', LeftPanelTab.tasks, compact: isPortrait),
+            const SizedBox(width: AppSpacing.xs),
+            _buildTabButton('Robot', LeftPanelTab.robot, compact: isPortrait),
             const Spacer(),
             // Edit button area (right-aligned)
             if (_leftTab == LeftPanelTab.points)
@@ -635,10 +631,13 @@ class _LocationsPageState extends State<LocationsPage> {
               const SizedBox(width: AppSpacing.xs),
               _buildActionsEditSaveButton(compact: isPortrait),
             ],
-            if (_leftTab == LeftPanelTab.displays)
-              _buildDisplaysEditSaveButton(compact: isPortrait),
             if (_leftTab == LeftPanelTab.tasks)
               _buildEditSaveButton(compact: isPortrait),
+            if (_leftTab == LeftPanelTab.robot) ...[
+              _buildRobotClearButton(compact: isPortrait),
+              const SizedBox(width: AppSpacing.xs),
+              _buildRobotEditButton(compact: isPortrait),
+            ],
           ],
         ),
           const SizedBox(height: AppSpacing.sm),
@@ -663,9 +662,11 @@ class _LocationsPageState extends State<LocationsPage> {
       case LeftPanelTab.actions:
         tabColor = AppColors.dangerBright; // Orange
         break;
-      case LeftPanelTab.displays:
       case LeftPanelTab.tasks:
         tabColor = AppColors.accent; // Blue
+        break;
+      case LeftPanelTab.robot:
+        tabColor = AppColors.dangerBright; // Orange to match actions
         break;
     }
     
@@ -702,9 +703,9 @@ class _LocationsPageState extends State<LocationsPage> {
       case LeftPanelTab.points:
         return _buildWaypointsList();
       case LeftPanelTab.actions:
-        return _buildActionsList();
-      case LeftPanelTab.displays:
-        return _buildDisplaysList();
+        return _buildActionsList(source: 'user');
+      case LeftPanelTab.robot:
+        return _buildActionsList(source: 'robot');
       case LeftPanelTab.tasks:
         return _buildSequencesList();
     }
@@ -818,7 +819,6 @@ class _LocationsPageState extends State<LocationsPage> {
       MaterialPageRoute(
         builder: (context) => ActionEditorPage(
           existingAction: existingDef,
-          rosBridge: widget.rosBridge,
           onSave: (action) {
             // Save to robot
             widget.rosBridge.publishSaveAction(action);
@@ -903,10 +903,23 @@ class _LocationsPageState extends State<LocationsPage> {
     );
   }
   
-  Widget _buildDisplaysEditSaveButton({bool compact = false}) {
+  Widget _buildRobotClearButton({bool compact = false}) {
+    // Get robot-generated actions
+    final robotActions = _actions.where((action) {
+      final def = _actionDefinitions[action.name];
+      return def?.source == 'robot';
+    }).toList();
+
+    if (robotActions.isEmpty) return const SizedBox.shrink();
+
+    // Clear all button for robot actions
     return GestureDetector(
       onTap: () {
-        setState(() => _isEditingDisplays = !_isEditingDisplays);
+        // Delete all robot-generated actions
+        for (final action in robotActions) {
+          widget.rosBridge.publishDeleteAction(action.name);
+        }
+        setState(() => _isEditingRobotActions = false);
       },
       child: Container(
         padding: EdgeInsets.symmetric(
@@ -914,22 +927,47 @@ class _LocationsPageState extends State<LocationsPage> {
           vertical: compact ? AppSpacing.sm : AppSpacing.sm,
         ),
         decoration: BoxDecoration(
-          color: _isEditingDisplays 
-              ? AppColors.success.withOpacity(0.15) 
+          color: AppColors.danger.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(AppRadius.small),
+          border: Border.all(color: AppColors.danger),
+        ),
+        child: Text(
+          'Clear',
+          style: TextStyle(
+            color: AppColors.danger,
+            fontWeight: FontWeight.bold,
+            fontSize: compact ? 13 : 14,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRobotEditButton({bool compact = false}) {
+    return GestureDetector(
+      onTap: () {
+        setState(() => _isEditingRobotActions = !_isEditingRobotActions);
+      },
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? AppSpacing.md : AppSpacing.md,
+          vertical: compact ? AppSpacing.sm : AppSpacing.sm,
+        ),
+        decoration: BoxDecoration(
+          color: _isEditingRobotActions
+              ? AppColors.success.withOpacity(0.15)
               : AppColors.accent.withOpacity(0.15),
           borderRadius: BorderRadius.circular(AppRadius.small),
           border: Border.all(
-            color: _isEditingDisplays ? AppColors.success : AppColors.accent,
+            color: _isEditingRobotActions ? AppColors.success : AppColors.accent,
           ),
         ),
-        child: Center(
-          child: Text(
-            _isEditingDisplays ? 'Save' : 'Edit',
-            style: TextStyle(
-              color: _isEditingDisplays ? AppColors.success : AppColors.accent,
-              fontWeight: FontWeight.bold,
-              fontSize: compact ? 13 : 14,
-            ),
+        child: Text(
+          _isEditingRobotActions ? 'Done' : 'Edit',
+          style: TextStyle(
+            color: _isEditingRobotActions ? AppColors.success : AppColors.accent,
+            fontWeight: FontWeight.bold,
+            fontSize: compact ? 13 : 14,
           ),
         ),
       ),
@@ -1141,21 +1179,28 @@ class _LocationsPageState extends State<LocationsPage> {
     }
   }
   
-  Widget _buildActionsList() {
-    if (_actions.isEmpty) {
+  Widget _buildActionsList({String source = 'user'}) {
+    // Filter actions by source using the full definitions
+    final filteredActions = _actions.where((action) {
+      final def = _actionDefinitions[action.name];
+      return def?.source == source;
+    }).toList();
+
+    if (filteredActions.isEmpty) {
+      final label = source == 'robot' ? 'robot-generated' : 'saved';
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.chat_bubble_outline,
+              source == 'robot' ? Icons.smart_toy : Icons.chat_bubble_outline,
               size: 48,
               color: AppColors.textMuted.withOpacity(0.5),
             ),
             const SizedBox(height: AppSpacing.md),
-            const Text(
-              'No saved actions',
-              style: TextStyle(
+            Text(
+              'No $label actions',
+              style: const TextStyle(
                 color: AppColors.textMuted,
                 fontSize: 16,
               ),
@@ -1164,20 +1209,16 @@ class _LocationsPageState extends State<LocationsPage> {
         ),
       );
     }
-    
-    if (_isEditingActions) {
-      // Edit mode: reorderable with drag handles, edit, and delete
-      return ReorderableListView.builder(
-        itemCount: _actions.length,
-        onReorder: (oldIndex, newIndex) {
-          setState(() {
-            if (newIndex > oldIndex) newIndex--;
-            final item = _actions.removeAt(oldIndex);
-            _actions.insert(newIndex, item);
-          });
-        },
+
+    final isEditing = (source == 'user' && _isEditingActions) ||
+                       (source == 'robot' && _isEditingRobotActions);
+
+    if (isEditing) {
+      // Edit mode: show edit and delete buttons
+      return ListView.builder(
+        itemCount: filteredActions.length,
         itemBuilder: (context, index) {
-          final action = _actions[index];
+          final action = filteredActions[index];
           return _ActionCard(
             key: ValueKey(action.name),
             action: action,
@@ -1191,16 +1232,16 @@ class _LocationsPageState extends State<LocationsPage> {
     } else {
       // Default mode: simple list with Load button
       return ListView.builder(
-        itemCount: _actions.length,
+        itemCount: filteredActions.length,
         itemBuilder: (context, index) {
-          final action = _actions[index];
+          final action = filteredActions[index];
           return _ActionCard(
             key: ValueKey(action.name),
             action: action,
             isEditing: false,
             onTap: () => _addActionToPlanner(action),
-            onDelete: () {},
-            showDefaultButton: true,
+            onDelete: () => _deleteAction(action),
+            showDefaultButton: source == 'user',
             onSetDefault: () => _setDefaultAction(action),
           );
         },
@@ -1277,113 +1318,58 @@ class _LocationsPageState extends State<LocationsPage> {
     }
   }
   
-  Widget _buildDisplaysList() {
-    if (_displays.isEmpty) {
+  Widget _buildHistoryList() {
+    if (_history.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.tablet_android,
+              Icons.history,
               size: 48,
               color: AppColors.textMuted.withOpacity(0.5),
             ),
             const SizedBox(height: AppSpacing.md),
             const Text(
-              'No saved displays',
+              'No task history',
               style: TextStyle(
                 color: AppColors.textMuted,
                 fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            const Text(
+              'Tasks will appear here as they\'re created',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 12,
               ),
             ),
           ],
         ),
       );
     }
-    
-    if (_isEditingDisplays) {
-      // Edit mode: reorderable with drag handles and delete
-      return ReorderableListView.builder(
-        itemCount: _displays.length,
-        onReorder: (oldIndex, newIndex) {
-          setState(() {
-            if (newIndex > oldIndex) newIndex--;
-            final item = _displays.removeAt(oldIndex);
-            _displays.insert(newIndex, item);
-          });
-        },
-        itemBuilder: (context, index) {
-          final display = _displays[index];
-          return _ActionCard(
-            key: ValueKey(display.name),
-            action: display,
-            isEditing: true,
-            onTap: () => _addDisplayToPlanner(display),
-            onDelete: () {},
-            showDelete: false,  // Displays cannot be deleted
-          );
-        },
-      );
-    } else {
-      // Default mode: simple list with Add button
-      return ListView.builder(
-        itemCount: _displays.length,
-        itemBuilder: (context, index) {
-          final display = _displays[index];
-          return _ActionCard(
-            key: ValueKey(display.name),
-            action: display,
-            isEditing: false,
-            onTap: () => _addDisplayToPlanner(display),
-            onDelete: () {},
-          );
-        },
-      );
-    }
-  }
-  
-  void _addDisplayToPlanner(ActionItem display) {
-    setState(() {
-      _taskSteps.add(TaskStep(
-        type: display.type,
-        value: display.name,
-        label: display.name,
-      ));
-    });
-  }
-  
-  void _deleteDisplay(ActionItem display) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.medium),
-        ),
-        title: Text('Delete "${display.name}"?', style: const TextStyle(color: AppColors.textPrimary)),
-        content: const Text(
-          'This display will be removed from the list.',
-          style: TextStyle(color: AppColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+
+    // Show history in reverse chronological order (newest first)
+    final sortedHistory = List<HistoryEntry>.from(_history)
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    return ListView.builder(
+      itemCount: sortedHistory.length,
+      itemBuilder: (context, index) {
+        final entry = sortedHistory[index];
+        return _HistoryCard(
+          entry: entry,
+          isEditing: _isEditingHistory,
+          onDelete: () {
+            widget.rosBridge.publishDeleteHistoryEntry(entry.timestamp.toIso8601String());
+            setState(() {
+              _history.removeWhere((h) => h.timestamp == entry.timestamp);
+            });
+          },
+        );
+      },
     );
-    
-    if (confirm == true) {
-      setState(() {
-        _displays.removeWhere((d) => d.name == display.name);
-      });
-    }
   }
 
   Widget _buildPlannerPanel() {
@@ -2383,6 +2369,193 @@ class _LocationCard extends StatelessWidget {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Card for displaying a history entry
+class _HistoryCard extends StatelessWidget {
+  final HistoryEntry entry;
+  final bool isEditing;
+  final VoidCallback? onDelete;
+
+  const _HistoryCard({
+    required this.entry,
+    this.isEditing = false,
+    this.onDelete,
+  });
+
+  IconData get _icon {
+    // Robot face icon for AI-generated entries
+    if (entry.source == 'robot') {
+      return Icons.smart_toy;
+    }
+
+    // Determine icon based on step types
+    final types = entry.steps.map((s) => s.type).toSet();
+
+    // Single navigate step = point/location
+    if (types.length == 1 && types.contains('navigate')) {
+      return Icons.location_on;
+    }
+
+    // Single action step = chat/action
+    if (types.length == 1 && types.contains('action')) {
+      return Icons.chat_bubble;
+    }
+
+    // Multiple steps or mixed = task
+    if (entry.steps.length > 1) {
+      return Icons.assignment;
+    }
+
+    // Display = tablet
+    if (types.contains('display')) {
+      return Icons.tablet_android;
+    }
+
+    // Default fallback
+    return Icons.route;
+  }
+
+  Color get _color {
+    // Robot = accent blue
+    if (entry.source == 'robot') {
+      return AppColors.accent;
+    }
+
+    // Match icon type to color
+    final types = entry.steps.map((s) => s.type).toSet();
+
+    if (types.length == 1 && types.contains('navigate')) {
+      return AppColors.success;  // Green for points
+    }
+
+    if (types.length == 1 && types.contains('action')) {
+      return AppColors.warning;  // Orange for actions
+    }
+
+    if (entry.steps.length > 1) {
+      return AppColors.accent;  // Blue for tasks
+    }
+
+    return AppColors.accent;
+  }
+
+  String get _timeString {
+    final now = DateTime.now();
+    final diff = now.difference(entry.timestamp);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${entry.timestamp.month}/${entry.timestamp.day}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 72,  // Fixed height for consistency
+      margin: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(AppRadius.small),
+            ),
+            child: Icon(_icon, color: _color, size: 20),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  entry.description,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    ...entry.steps.take(3).map((step) {
+                      Color chipColor;
+                      IconData chipIcon;
+                      switch (step.type) {
+                        case 'navigate':
+                          chipColor = AppColors.success;
+                          chipIcon = Icons.location_on;
+                          break;
+                        case 'action':
+                          chipColor = AppColors.warning;
+                          chipIcon = Icons.chat_bubble;
+                          break;
+                        case 'display':
+                          chipColor = AppColors.accent;
+                          chipIcon = Icons.tablet_android;
+                          break;
+                        default:
+                          chipColor = AppColors.textMuted;
+                          chipIcon = Icons.circle;
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: chipColor.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(chipIcon, size: 10, color: chipColor),
+                              const SizedBox(width: 4),
+                              Text(
+                                step.value,
+                                style: TextStyle(color: chipColor, fontSize: 10, fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                    if (entry.steps.length > 3)
+                      Text(
+                        '+${entry.steps.length - 3}',
+                        style: const TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 10,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (isEditing && onDelete != null)
+            GestureDetector(
+              onTap: onDelete,
+              child: const Icon(Icons.delete_outline, color: AppColors.textMuted, size: 20),
+            )
+          else
+            Text(_timeString, style: const TextStyle(color: AppColors.textMuted, fontSize: 11)),
         ],
       ),
     );

@@ -7,8 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:record/record.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
-import 'ticket_tools_handler.dart';
 import 'workflow_tools.dart';
+import 'memory_tools.dart';
 
 /// Voice states for UI feedback
 enum VoiceState {
@@ -46,19 +46,27 @@ class VoicePipelineService {
   bool _isContinuousMode = false;
   bool _isPaused = false;
   bool _isStopping = false;
-  bool _shouldEndConversation = false;  // Set when complete_order is called
+  bool _shouldEndConversation = false;  // Currently unused - conversations don't auto-end
+  bool _stopped = true;  // Hard stop flag - prevents any audio when true
   
   // VAD (Voice Activity Detection) parameters
   StreamSubscription? _amplitudeSubscription;
   Timer? _silenceTimer;
   Timer? _maxRecordingTimer;
   DateTime? _lastSpeechTime;
+  DateTime? _speechStartTime;  // When speech first started
   bool _hasDetectedSpeech = false;
   String? _currentRecordingPath;
-  
+
+  // Idle timeout - pause if no user speech for this long
+  Timer? _idleTimer;
+  DateTime? _lastUserSpeechTime;
+  static const int _idleTimeoutSeconds = 60;
+
   static const Duration _silenceThreshold = Duration(milliseconds: 1500);  // Stop after 1.5s silence
   static const Duration _maxRecordingDuration = Duration(seconds: 30);     // Max recording time
-  static const double _speechAmplitudeThreshold = -25.0;  // dB threshold for speech
+  static const Duration _minSpeechDuration = Duration(milliseconds: 300);  // Min speech before processing
+  static const double _speechAmplitudeThreshold = -20.0;  // dB threshold for speech (raised from -25)
   
   // Conversation history
   final List<Map<String, String>> _conversationHistory = [];
@@ -68,8 +76,8 @@ class VoicePipelineService {
   String _voice = 'alloy';
   
   // Tool handlers
-  TicketToolsHandler? ticketToolsHandler;
   WorkflowTools? workflowToolsHandler;
+  MemoryTools? memoryToolsHandler;
   
   // Callbacks
   void Function(VoiceState state)? onStateChange;
@@ -77,7 +85,7 @@ class VoicePipelineService {
   void Function(String text)? onResponse;        // AI's response
   void Function(String error)? onError;
   void Function(bool speaking)? onSpeaking;
-  void Function()? onConversationComplete;       // Called when order is complete
+  void Function()? onConversationComplete;       // Called when conversation ends
   void Function()? onPauseRequested;             // Called when user says "pause"
   
   VoicePipelineService();
@@ -99,7 +107,11 @@ class VoicePipelineService {
     _isPaused = false;
     _isContinuousMode = true;
     _shouldEndConversation = false;
-    
+    _stopped = false;  // Allow audio
+
+    // Start idle timer
+    _startIdleTimer();
+
     debugPrint('🎤 Starting conversation');
     
     // Speak greeting if provided
@@ -121,11 +133,54 @@ class VoicePipelineService {
     _voice = voice;
     _isPaused = false;
     _isContinuousMode = false;  // Don't start continuous listening
-    
+    _stopped = false;  // Allow audio
+
     debugPrint('🔊 Speaking only (delivery mode): $text');
     await _speakText(text);
   }
-  
+
+  /// Listen once and return the transcription (for confirmation flows)
+  Future<String> listenOnce() async {
+    final completer = Completer<String>();
+
+    // Brief pause to ensure audio buffers are flushed
+    await Future.delayed(const Duration(milliseconds: 1200));
+
+    // Store original callback
+    final originalOnTranscription = onTranscription;
+
+    // Set up one-time transcription callback
+    onTranscription = (text) {
+      if (!completer.isCompleted) {
+        completer.complete(text);
+      }
+      // Restore original callback
+      onTranscription = originalOnTranscription;
+    };
+
+    // Start listening (non-continuous mode)
+    _isContinuousMode = false;
+    await startListening();
+
+    // Wait for transcription with timeout
+    try {
+      final result = await completer.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint('⏱️ listenOnce timed out');
+          stopListening();
+          onTranscription = originalOnTranscription;
+          return '';
+        },
+      );
+      return result;
+    } catch (e) {
+      debugPrint('❌ listenOnce error: $e');
+      onTranscription = originalOnTranscription;
+      return '';
+    }
+  }
+
   /// Start listening for audio with VAD
   Future<void> startListening() async {
     if (_isRecording || _isProcessing || _isPlaying || _isStopping) {
@@ -186,6 +241,7 @@ class VoicePipelineService {
   void _startVADMonitoring(String recordingPath) {
     _hasDetectedSpeech = false;
     _lastSpeechTime = DateTime.now();
+    _speechStartTime = null;
     
     // Max recording timer (safety fallback)
     _maxRecordingTimer = Timer(_maxRecordingDuration, () {
@@ -211,6 +267,7 @@ class VoicePipelineService {
       if (amplitude.current > _speechAmplitudeThreshold) {
         // Speech detected
         if (!_hasDetectedSpeech) {
+          _speechStartTime = DateTime.now();
           _hasDetectedSpeech = true;
           debugPrint('🎤 Speech detected (${amplitude.current.toStringAsFixed(1)} dB)');
         }
@@ -225,17 +282,29 @@ class VoicePipelineService {
         return;
       }
       
-      if (_hasDetectedSpeech && _lastSpeechTime != null) {
+      if (_hasDetectedSpeech && _lastSpeechTime != null && _speechStartTime != null) {
         final silenceDuration = DateTime.now().difference(_lastSpeechTime!);
-        
+        final speechDuration = _lastSpeechTime!.difference(_speechStartTime!);
+
         if (silenceDuration >= _silenceThreshold) {
-          debugPrint('🎤 Silence detected (${silenceDuration.inMilliseconds}ms) - stopping');
           timer.cancel();
           _amplitudeSubscription?.cancel();
           _maxRecordingTimer?.cancel();
-          
-          if (_isRecording && !_isStopping) {
-            _stopAndProcess(recordingPath);
+
+          // Only process if speech was long enough (not just a noise spike)
+          if (speechDuration >= _minSpeechDuration) {
+            debugPrint('🎤 Silence detected (${silenceDuration.inMilliseconds}ms) after ${speechDuration.inMilliseconds}ms speech - processing');
+            if (_isRecording && !_isStopping) {
+              _stopAndProcess(recordingPath);
+            }
+          } else {
+            debugPrint('🎤 Too short (${speechDuration.inMilliseconds}ms) - discarding');
+            // Restart listening without processing
+            if (_isRecording && !_isStopping && _isContinuousMode) {
+              _hasDetectedSpeech = false;
+              _speechStartTime = null;
+              _startVADMonitoring(recordingPath);
+            }
           }
         }
       }
@@ -285,8 +354,9 @@ class VoicePipelineService {
       // Step 1: STT (Speech to Text)
       final transcription = await _speechToText(recordingPath);
       
-      if (transcription == null || transcription.isEmpty) {
-        debugPrint('No speech detected');
+      // Filter out empty or very short transcripts (likely noise)
+      if (transcription == null || transcription.trim().length < 2) {
+        debugPrint('🎤 No valid speech (empty or too short)');
         _isProcessing = false;
         if (_isContinuousMode && !_isPaused) {
           await startListening();
@@ -296,7 +366,10 @@ class VoicePipelineService {
       
       debugPrint('👤 User: $transcription');
       onTranscription?.call(transcription);
-      
+
+      // Reset idle timer - user is active
+      _resetIdleTimer();
+
       // Check for pause command
       if (_isPauseCommand(transcription)) {
         debugPrint('⏸️ Pause command detected');
@@ -324,9 +397,9 @@ class VoicePipelineService {
       // Handle tool calls if any
       String? aiResponse = response.content;
       bool shouldEndAfterSpeaking = false;
-      if (response.hasToolCalls && (ticketToolsHandler != null || workflowToolsHandler != null)) {
+      if (response.hasToolCalls && workflowToolsHandler != null) {
         aiResponse = await _handleToolCalls(response, transcription);
-        // Check if conversation was stopped during tool handling (e.g., complete_order)
+        // Check if conversation was stopped during tool handling
         if (!_isContinuousMode) {
           debugPrint('🛑 Conversation will end after speaking response');
           shouldEndAfterSpeaking = true;
@@ -346,9 +419,9 @@ class VoicePipelineService {
       
       _isProcessing = false;
       
-      // Check if conversation should end (after complete_order)
+      // Check if conversation should end
       if (_shouldEndConversation || shouldEndAfterSpeaking) {
-        debugPrint('🏁 Ending conversation after order completion');
+        debugPrint('🏁 Ending conversation');
         _shouldEndConversation = false;
         // Don't call stopConversation again - it was already called
         onConversationComplete?.call();
@@ -414,9 +487,6 @@ class VoicePipelineService {
     try {
       // Build system prompt with context from handlers
       String enhancedPrompt = _systemPrompt;
-      if (ticketToolsHandler != null) {
-        enhancedPrompt += ticketToolsHandler!.getActiveTicketContext();
-      }
       if (workflowToolsHandler != null) {
         enhancedPrompt += workflowToolsHandler!.getWorkflowContext();
       }
@@ -435,11 +505,11 @@ class VoicePipelineService {
       
       // Combine tools from all available handlers
       final allTools = <Map<String, dynamic>>[];
-      if (ticketToolsHandler != null) {
-        allTools.addAll(TicketToolsHandler.toolDefinitions);
-      }
       if (workflowToolsHandler != null) {
         allTools.addAll(WorkflowTools.toolDefinitions);
+      }
+      if (memoryToolsHandler != null) {
+        allTools.addAll(MemoryTools.toolDefinitions);
       }
       
       // Add tools if any handlers are available
@@ -466,8 +536,8 @@ class VoicePipelineService {
         // Check for tool calls
         List<ToolCall>? toolCalls;
         if (message['tool_calls'] != null) {
-          toolCalls = (message['tool_calls'] as List)
-              .map((tc) => ToolCall.fromJson(tc))
+          toolCalls = (message['tool_calls'] as List<dynamic>)
+              .map<ToolCall>((tc) => ToolCall.fromJson(tc as Map<String, dynamic>))
               .toList();
         }
         
@@ -493,49 +563,35 @@ class VoicePipelineService {
     }
     
     // Check if we have any handlers
-    if (ticketToolsHandler == null && workflowToolsHandler == null) {
+    if (workflowToolsHandler == null && memoryToolsHandler == null) {
       return response.content;
     }
-    
+
     debugPrint('Handling ${response.toolCalls!.length} tool call(s)');
-    
-    // Ticket tool names
-    const ticketTools = {'add_order_item', 'complete_order', 'cancel_order', 'get_order_summary'};
-    
+
+    // Tool name sets for routing
+    const memoryTools = {'add_owner_note', 'remember_person', 'add_memory_note', 'recall_memories', 'get_owner_info'};
+
     // Execute each tool
     final toolResults = <Map<String, dynamic>>[];
     for (final toolCall in response.toolCalls!) {
       ToolResult result;
-      
+
       // Route to appropriate handler
-      if (ticketTools.contains(toolCall.name) && ticketToolsHandler != null) {
-        result = await ticketToolsHandler!.executeTool(toolCall);
+      if (memoryTools.contains(toolCall.name) && memoryToolsHandler != null) {
+        result = await memoryToolsHandler!.executeTool(toolCall);
       } else if (workflowToolsHandler != null) {
         result = await workflowToolsHandler!.executeTool(toolCall);
       } else {
         result = ToolResult(success: false, message: 'No handler for tool: ${toolCall.name}');
       }
-      
+
       toolResults.add({
         'tool_call_id': toolCall.id,
         'role': 'tool',
         'content': jsonEncode(result.toJson()),
       });
       debugPrint('Tool ${toolCall.name}: ${result.success ? "success" : "failed"}');
-      
-      // If complete_order or cancel_order was called successfully, end conversation after speaking
-      if ((toolCall.name == 'complete_order' || toolCall.name == 'cancel_order') && result.success) {
-        _shouldEndConversation = true;
-        debugPrint('🏁 Order ${toolCall.name == 'cancel_order' ? 'cancelled' : 'complete'} - will end conversation after speaking');
-      }
-      
-      // If execute_now or confirm_and_execute was called, end conversation immediately - no more speech
-      if ((toolCall.name == 'execute_now' || toolCall.name == 'confirm_and_execute') && result.success) {
-        _shouldEndConversation = true;
-        debugPrint('🏁 Workflow executing - ending conversation immediately (no speech)');
-        // Return null to skip follow-up speech - workflow is starting
-        return null;
-      }
     }
     
     // Get follow-up response from LLM
@@ -544,9 +600,6 @@ class VoicePipelineService {
     
     try {
       String enhancedPrompt = _systemPrompt;
-      if (ticketToolsHandler != null) {
-        enhancedPrompt += ticketToolsHandler!.getActiveTicketContext();
-      }
       if (workflowToolsHandler != null) {
         enhancedPrompt += workflowToolsHandler!.getWorkflowContext();
       }
@@ -589,18 +642,25 @@ class VoicePipelineService {
     return response.content;
   }
   
+  /// Public method to speak text (for remote commands)
+  Future<void> speakText(String text) => _speakText(text);
+
   /// Text to Speech and play (like millie_mini pattern)
   Future<void> _speakText(String text) async {
     if (text.isEmpty) return;
-    
+    if (_stopped) {
+      debugPrint('🔊 TTS: Aborted - conversation stopped');
+      return;
+    }
+
     final apiKey = dotenv.env['OPENAI_API_KEY'];
     if (apiKey == null) return;
-    
+
     onStateChange?.call(VoiceState.speaking);
     onSpeaking?.call(true);
     _isPlaying = true;
     debugPrint('🔊 TTS: Starting...');
-    
+
     try {
       final response = await http.post(
         Uri.parse('https://api.openai.com/v1/audio/speech'),
@@ -614,12 +674,20 @@ class VoicePipelineService {
           'input': text,
         }),
       );
-      
+
+      // Check again after HTTP request - might have been stopped while waiting
+      if (_stopped) {
+        debugPrint('🔊 TTS: Aborted after request - conversation stopped');
+        _isPlaying = false;
+        onSpeaking?.call(false);
+        return;
+      }
+
       if (response.statusCode == 200) {
         final tempDir = await getTemporaryDirectory();
         final file = File('${tempDir.path}/tts_${DateTime.now().millisecondsSinceEpoch}.mp3');
         await file.writeAsBytes(response.bodyBytes);
-        
+
         // Stop any previous playback
         try { await _player.stop(); } catch (_) {}
         
@@ -682,11 +750,40 @@ class VoicePipelineService {
     
     return false;
   }
-  
+
+  /// Start idle timer - pauses conversation if no user speech for timeout period
+  void _startIdleTimer() {
+    _lastUserSpeechTime = DateTime.now();
+    _idleTimer?.cancel();
+    _idleTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _checkIdleTimeout();
+    });
+  }
+
+  void _resetIdleTimer() {
+    _lastUserSpeechTime = DateTime.now();
+  }
+
+  void _checkIdleTimeout() {
+    if (_lastUserSpeechTime == null || _isPaused || _stopped) {
+      return;
+    }
+    final secondsSinceLastSpeech = DateTime.now().difference(_lastUserSpeechTime!).inSeconds;
+    if (secondsSinceLastSpeech >= _idleTimeoutSeconds) {
+      debugPrint('⏱️ [TurnTaking] Idle timeout - pausing');
+      _idleTimer?.cancel();
+      pause();
+      onPauseRequested?.call();
+    }
+  }
+
   /// Pause the conversation
   void pause() {
     _isPaused = true;
-    
+
+    // Cancel idle timer
+    _idleTimer?.cancel();
+
     // Cancel VAD monitoring timers
     _amplitudeSubscription?.cancel();
     _silenceTimer?.cancel();
@@ -715,9 +812,12 @@ class VoicePipelineService {
     debugPrint('   _isContinuousMode was: $_isContinuousMode');
     debugPrint('   _isProcessing: $_isProcessing');
     debugPrint('   _isPlaying: $_isPlaying');
-    
+
     _isPaused = false;
-    
+
+    // Restart idle timer
+    _startIdleTimer();
+
     // Always try to start listening when resuming (re-enables continuous mode)
     // This matches millie_mini behavior where resume goes directly to listening
     if (!_isProcessing && !_isPlaying) {
@@ -731,10 +831,14 @@ class VoicePipelineService {
   
   /// Stop the conversation completely
   Future<void> stopConversation() async {
+    _stopped = true;  // Hard stop - prevent any further audio
     _isContinuousMode = false;
     _isPaused = false;
     _shouldEndConversation = false;
-    
+
+    // Cancel idle timer
+    _idleTimer?.cancel();
+
     // Cancel VAD monitoring
     _amplitudeSubscription?.cancel();
     _silenceTimer?.cancel();
@@ -751,8 +855,7 @@ class VoicePipelineService {
     _isStopping = false;
     
     _conversationHistory.clear();
-    ticketToolsHandler?.clear();
-    workflowToolsHandler?.clear();  // Clear pending workflow steps
+    workflowToolsHandler?.clear();
     
     onStateChange?.call(VoiceState.idle);
     debugPrint('🛑 Conversation stopped - all state reset');

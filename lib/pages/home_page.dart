@@ -6,14 +6,10 @@ import '../widgets/icon_rail.dart';
 import '../widgets/top_notification.dart';
 import '../services/conversation_service.dart';
 import '../services/location_service.dart';
-import '../services/wake_service.dart';
-import '../models/ticket.dart';
 import 'settings_page.dart';
 import 'locations_page.dart';
 import 'launch_page.dart';
-import 'order_display_page.dart';
-import 'tickets_page.dart';
-import 'ticket_view_page.dart';
+import 'face_page.dart';
 
 // Top-level state that persists across all rebuilds
 MainView? _persistedView;
@@ -32,7 +28,7 @@ class _HomePageState extends State<HomePage> {
   // ROS bridge connection
   late RosBridge rosBridge;
   bool _rosbridgeConnected = false;
-  
+
   // Robot API (boot server)
   late RobotApi robotApi;
   
@@ -42,15 +38,9 @@ class _HomePageState extends State<HomePage> {
   // Display mode (what's shown on screen)
   DisplayMode _displayMode = DisplayMode.dashboard;
   
-  // Key for accessing OrderDisplayPage state
-  final GlobalKey<OrderDisplayPageState> _orderDisplayKey = GlobalKey();
-  
-  // Key for accessing TicketsPage state
-  final GlobalKey<TicketsPageState> _ticketsKey = GlobalKey();
-  
-  // Current ticket (last created, for "Display Current Ticket")
-  Ticket? _currentTicket;
-  
+  // Key for accessing FacePage state
+  final GlobalKey<FacePageState> _faceKey = GlobalKey();
+
   // Use top-level persisted state with fallback defaults
   // Default to Launch page for the face tablet
   MainView get _currentView => _persistedView ?? MainView.launch;
@@ -60,13 +50,17 @@ class _HomePageState extends State<HomePage> {
   String _workflowStatus = 'idle';
   bool _orderInProgress = false;
 
+  // Active agent face
+  String _activeFaceId = '';
+  late final void Function(List<AgentDefinition>) _agentListener;
+
   @override
   void initState() {
     super.initState();
-    robotApi = RobotApi("http://192.168.1.14:5050");
-    rosBridge = RosBridge("ws://192.168.1.14:9090");
+    robotApi = RobotApi("http://192.168.0.157:5050");
+    rosBridge = RosBridge("ws://192.168.0.157:9090");
     
-    // Initialize location service for ticket creation
+    // Initialize location service
     LocationService.instance.init(rosBridge);
     
     // Initialize conversation service
@@ -82,53 +76,146 @@ class _HomePageState extends State<HomePage> {
     
     // Listen for workflow status updates (multi-listener pattern)
     rosBridge.addWorkflowStatusListener(_handleWorkflowStatus);
-    
+
+    // Listen for agents to get active face
+    _agentListener = (agents) {
+      if (mounted && agents.isNotEmpty) {
+        final activeAgent = agents.where((a) => a.isDefault).firstOrNull ?? agents.first;
+        setState(() => _activeFaceId = activeAgent.faceId);
+      }
+    };
+    rosBridge.addAgentListener(_agentListener);
+
     // Listen for action execution requests
     rosBridge.onActionExecute = _handleActionExecute;
-    
+
     // Listen for display commands from workflow
     rosBridge.onDisplayCommand = _handleDisplayCommand;
-    
-    // Try to connect to ROSBridge immediately
+
+    // Listen for voice agent start from controller (play button)
+    rosBridge.onVoiceAgentStart = () {
+      debugPrint('🎤 Controller requested voice agent start');
+      _launchFace();
+    };
+
+    // Listen for mode commands from controller (launch/play/pause buttons)
+    rosBridge.onLaunch = () {
+      debugPrint('🚀 Controller requested launch');
+      _launchFace();
+    };
+
+    rosBridge.onPlay = () async {
+      debugPrint('▶️ Controller requested play');
+      if (_displayMode == DisplayMode.face) {
+        if (conversationService.isPaused) {
+          await conversationService.resumeConversation(greeting: "I'm back! What did I miss?");
+          _faceKey.currentState?.setPaused(false);
+          rosBridge.publishVoicePlaying();
+        } else if (conversationService.isIdle) {
+          await conversationService.startDefaultConversation();
+          _faceKey.currentState?.setPaused(false);
+          rosBridge.publishVoicePlaying();
+        }
+      } else {
+        // Not on face yet - show face and start AI
+        setState(() => _displayMode = DisplayMode.face);
+        await conversationService.startDefaultConversation();
+        _faceKey.currentState?.setPaused(false);
+        rosBridge.publishVoicePlaying();
+      }
+    };
+
+    rosBridge.onPause = () {
+      debugPrint('⏸️ Controller requested pause');
+      if (_displayMode == DisplayMode.face) {
+        conversationService.pauseConversation();
+        _faceKey.currentState?.setPaused(true);
+        rosBridge.publishVoicePaused();
+      }
+    };
+
+    rosBridge.onStart = () {
+      debugPrint('▶️ Controller requested start (silent)');
+      _startFace();
+    };
+
+    rosBridge.onExit = () async {
+      debugPrint('🚪 Controller requested exit');
+      await conversationService.cancelConversation();
+      rosBridge.publishVoiceIdle();
+      setState(() => _displayMode = DisplayMode.dashboard);
+    };
+
+    rosBridge.onRefresh = () async {
+      debugPrint('🔄 Controller requested refresh');
+      await conversationService.cancelConversation();
+      rosBridge.publishWorkflowCancel();
+      rosBridge.publishVoiceIdle();
+    };
+
+    rosBridge.onWanderStart = () {
+      debugPrint('🔍 Controller requested patrol mode start');
+      // Show face if not already showing
+      if (_displayMode != DisplayMode.face) {
+        setState(() => _displayMode = DisplayMode.face);
+      }
+      // Controller wander button triggers patrol mode (wander + person detection)
+      conversationService.startPatrolMode();
+    };
+
+    rosBridge.onWanderStop = () {
+      debugPrint('🛑 Controller requested patrol mode stop');
+      conversationService.stopPatrolMode();
+    };
+
+    // Motion detector status - inject prompts in realtime mode
+    rosBridge.onMotionDetectorStatus = (status) {
+      if (!conversationService.isActive || conversationService.voiceMode != 'realtime') return;
+
+      switch (status) {
+        case 'approaching':
+          conversationService.injectPrompt('You just noticed someone moving nearby. Call out to them in a friendly way and start a conversation as you approach.');
+          break;
+        case 'arrived':
+          conversationService.injectPrompt('You have arrived in front of the person. Greet them warmly.');
+          break;
+        case 'lost':
+          conversationService.injectPrompt('The person you were approaching seems to have moved away. Express mild confusion and mention you lost track of them.');
+          break;
+      }
+    };
+
+    // Wander status - inject prompts in realtime mode
+    rosBridge.onWanderStatus = (status) {
+      if (!conversationService.isActive || conversationService.voiceMode != 'realtime') return;
+
+      switch (status) {
+        case 'searching':
+          conversationService.injectPrompt('You heard a voice and are looking around. Say something like you are trying to find who spoke.');
+          break;
+      }
+    };
+
+    // Limiter status - inject prompts when blocked by obstacle
+    rosBridge.onLimiterStatus = (status) {
+      if (!conversationService.isActive || conversationService.voiceMode != 'realtime') return;
+
+      if (status == 'blocked') {
+        conversationService.injectPrompt('You hit an obstacle and had to stop. Make a brief comment like "Oops!" or "Something is in the way."');
+      }
+    };
+
+    // Load cached data first, then connect to ROSBridge
+    _initializeRosBridge();
+  }
+
+  Future<void> _initializeRosBridge() async {
+    // Load cached data first so UI shows immediately
+    await rosBridge.loadFromCache();
+    // Then try to connect to ROS (will overwrite cache with fresh data if connected)
     rosBridge.connect();
-    
-    // Initialize wake word detection
-    _initWakeService();
   }
-  
-  Future<void> _initWakeService() async {
-    try {
-      await WakeService.instance.init(
-        onWake: () async {
-          // Debug: log current state
-          debugPrint('🎤 Wake word detected!');
-          debugPrint('   isPaused: ${conversationService.isPaused}');
-          debugPrint('   isIdle: ${conversationService.isIdle}');
-          debugPrint('   state: ${conversationService.state}');
-          
-          // Wake word behavior:
-          // - Paused → Resume listening (no greeting)
-          // - Idle → Start new conversation (with greeting)
-          if (conversationService.isPaused) {
-            // Resume paused conversation - just start listening again
-            debugPrint('🎤 → Resuming paused conversation');
-            await conversationService.resumeConversation();
-            _orderDisplayKey.currentState?.setPaused(false);
-          } else if (conversationService.isIdle) {
-            // Start new conversation with greeting
-            debugPrint('🎤 → Starting default conversation');
-            await conversationService.startDefaultConversation();
-          } else {
-            debugPrint('🎤 → Ignoring (active conversation)');
-          }
-        },
-      );
-      debugPrint('✅ Wake service initialized');
-    } catch (e) {
-      debugPrint('⚠️ Wake service init failed: $e');
-    }
-  }
-  
+
   void _setupConversationCallbacks() {
     conversationService.onSpeakingChange = (speaking) {
       setSpeaking(speaking);
@@ -139,69 +226,43 @@ class _HomePageState extends State<HomePage> {
       debugPrint('📍 State change: ${state.name}');
       switch (state) {
         case ConversationState.listening:
-          _orderDisplayKey.currentState?.setIdle(false);
-          _orderDisplayKey.currentState?.setListening(true);
-          _orderDisplayKey.currentState?.setProcessing(false);
-          _orderDisplayKey.currentState?.setSpeaking(false);
-          // Stop wake word when conversation is active
-          WakeService.instance.stop();
+          _faceKey.currentState?.setIdle(false);
+          _faceKey.currentState?.setListening(true);
+          _faceKey.currentState?.setProcessing(false);
+          _faceKey.currentState?.setSpeaking(false);
+          rosBridge.publishVoicePlaying();
           break;
         case ConversationState.processing:
-          _orderDisplayKey.currentState?.setIdle(false);
-          _orderDisplayKey.currentState?.setListening(false);
-          _orderDisplayKey.currentState?.setProcessing(true);
-          _orderDisplayKey.currentState?.setSpeaking(false);
+          _faceKey.currentState?.setIdle(false);
+          _faceKey.currentState?.setListening(false);
+          _faceKey.currentState?.setProcessing(true);
+          _faceKey.currentState?.setSpeaking(false);
           break;
         case ConversationState.speaking:
-          _orderDisplayKey.currentState?.setIdle(false);
-          _orderDisplayKey.currentState?.setListening(false);
-          _orderDisplayKey.currentState?.setProcessing(false);
-          _orderDisplayKey.currentState?.setSpeaking(true);
+          _faceKey.currentState?.setIdle(false);
+          _faceKey.currentState?.setListening(false);
+          _faceKey.currentState?.setProcessing(false);
+          _faceKey.currentState?.setSpeaking(true);
           break;
         case ConversationState.starting:
         case ConversationState.greeting:
-          _orderDisplayKey.currentState?.setIdle(false);
-          _orderDisplayKey.currentState?.setListening(false);
-          _orderDisplayKey.currentState?.setProcessing(false);
-          // Stop wake word when conversation is starting
-          WakeService.instance.stop();
+          _faceKey.currentState?.setIdle(false);
+          _faceKey.currentState?.setListening(false);
+          _faceKey.currentState?.setProcessing(false);
+          rosBridge.publishVoicePlaying();
           break;
         case ConversationState.idle:
         case ConversationState.complete:
         case ConversationState.cancelled:
-          _orderDisplayKey.currentState?.setIdle(true);
-          _orderDisplayKey.currentState?.setListening(false);
-          _orderDisplayKey.currentState?.setProcessing(false);
+          _faceKey.currentState?.setIdle(true);
+          _faceKey.currentState?.setListening(false);
+          _faceKey.currentState?.setProcessing(false);
           // Close thought bubble when conversation ends
           closeThoughtBubble();
           _orderInProgress = false;
-          // Restart wake word when idle and on face page (delay for mic release)
-          if (_displayMode == DisplayMode.face) {
-            Future.delayed(const Duration(milliseconds: 500), () {
-              WakeService.instance.start();
-            });
-          }
+          rosBridge.publishVoiceIdle();
           break;
       }
-    };
-    
-    conversationService.onOrderStarted = () {
-      startRecordingOrder();
-    };
-    
-    conversationService.onOrderItemAdded = (item) {
-      addOrderItem(item);
-    };
-    
-    conversationService.onOrderComplete = (ticket) {
-      // Add to tickets list
-      _ticketsKey.currentState?.addTicket(ticket);
-      // Store as current ticket for "Display Current Ticket" command
-      _currentTicket = ticket;
-      debugPrint('✅ Ticket created: ${ticket.title}');
-      // Close thought bubble - order is complete
-      closeThoughtBubble();
-      _orderInProgress = false;
     };
     
     // TTS is now handled directly by AiService via WebRTC
@@ -216,58 +277,47 @@ class _HomePageState extends State<HomePage> {
     // Handle voice command "pause"
     conversationService.onPauseRequested = () {
       debugPrint('⏸️ Voice pause command - updating UI');
-      _orderDisplayKey.currentState?.setPaused(true);
-      // Start wake word so "Hey Millie" can resume
-      WakeService.instance.start();
+      _faceKey.currentState?.setPaused(true);
+      rosBridge.publishVoicePaused();
     };
   }
   
   /// Handle action execution from workflow
-  void _handleActionExecute(ActionDefinition action, Ticket? ticket) {
+  void _handleActionExecute(ActionDefinition action) {
     debugPrint('🎯 Executing action: ${action.name}');
-    if (ticket != null) {
-      debugPrint('📦 With ticket: ${ticket.title} (${ticket.items.length} items)');
-    }
-    
+    debugPrint('🎯 Action greeting: ${action.openingGreeting}');
+    debugPrint('🎯 isPausedForTask: ${conversationService.isPausedForTask}');
+
     // Make sure we're in face mode
     if (_displayMode != DisplayMode.face) {
       _launchFace();
     }
-    
-    // Start the conversation with optional ticket context
-    conversationService.startConversation(action, ticket: ticket);
+
+    // Always use handleTaskAction - it speaks directly via TTS
+    // This is more reliable than startConversation which has complex pipeline logic
+    conversationService.handleTaskAction(action);
   }
 
   /// Handle display commands from workflow
   void _handleDisplayCommand(String displayName) {
     debugPrint('📺 Display command received: "$displayName" (current mode: $_displayMode)');
-    
+
     if (!mounted) {
       debugPrint('📺 WARNING: Not mounted, ignoring command');
       return;
     }
-    
-    // Pop any pushed routes (like TicketViewPage) before handling display commands
+
+    // Pop any pushed routes before handling display commands
     if (Navigator.of(context).canPop()) {
       debugPrint('📺 Popping overlay routes to show display');
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
-    
+
     // Handle different display commands
     switch (displayName) {
       case 'Show Face':
-        // Explicit face display command
         debugPrint('📺 Handling Show Face command');
-        _launchFace();  // Always call - it handles the animation
-        break;
-      case 'Display Tickets':
-        setState(() {
-          _displayMode = DisplayMode.dashboard;
-          _currentView = MainView.tickets;
-        });
-        break;
-      case 'Display Current Ticket':
-        _showCurrentTicket();
+        _launchFace();
         break;
       default:
         // Unknown display - show face by default
@@ -277,79 +327,6 @@ class _HomePageState extends State<HomePage> {
         }
         break;
     }
-  }
-  
-  /// Show the current ticket (last created during workflow)
-  void _showCurrentTicket() {
-    if (_currentTicket == null) {
-      debugPrint('⚠️ No current ticket to display');
-      // Fall back to tickets list
-      setState(() {
-        _displayMode = DisplayMode.dashboard;
-        _currentView = MainView.tickets;
-      });
-      return;
-    }
-    
-    // Reset conversation service state - workflow is done, ticket is saved
-    debugPrint('📋 Displaying current ticket - resetting conversation state');
-    conversationService.cancelConversation();
-    
-    // Navigate to ticket view page
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => TicketViewPage(
-          ticket: _currentTicket!,
-          rosBridge: rosBridge,
-          onExit: () {
-            debugPrint('🚪 Exit from ticket view - current displayMode: $_displayMode');
-            Navigator.of(context).pop();
-            debugPrint('🚪 After pop, calling _exitToLaunch');
-            _exitToLaunch();
-            debugPrint('🚪 After _exitToLaunch, displayMode: $_displayMode');
-          },
-          onTicketUpdated: (updated) {
-            _ticketsKey.currentState?.updateTicket(updated);
-            _currentTicket = updated;
-          },
-          onTicketDeleted: () {
-            final ticketId = _currentTicket!.id;
-            _currentTicket = null;
-            _ticketsKey.currentState?.deleteTicket(ticketId);
-            Navigator.of(context).pop();
-          },
-          onPause: () {
-            debugPrint('⏸️ Pause pressed');
-            conversationService.pauseConversation();
-            _orderDisplayKey.currentState?.setPaused(true);
-            // Start wake word so "Hey Millie" can resume
-            WakeService.instance.start();
-          },
-          onPlay: () async {
-            debugPrint('▶️ Play pressed');
-            if (conversationService.isPaused) {
-              // Resume paused conversation - just start listening again
-              debugPrint('▶️ Resuming paused conversation');
-              await conversationService.resumeConversation();
-              _orderDisplayKey.currentState?.setPaused(false);
-            } else if (conversationService.isIdle) {
-              // No active conversation - start default conversation
-              debugPrint('🎯 Starting default conversation');
-              await conversationService.startDefaultConversation();
-            }
-          },
-          onRefresh: () async {
-            debugPrint('🔄 Refresh pressed - cancelling conversation and resetting counter');
-            await conversationService.cancelConversation();
-            conversationService.resetTicketCounter();
-            rosBridge.publishWorkflowCancel();
-          },
-        ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return FadeTransition(opacity: animation, child: child);
-        },
-      ),
-    );
   }
 
   /// Handle workflow status changes from robot
@@ -409,8 +386,14 @@ class _HomePageState extends State<HomePage> {
     }
     
     // Auto-launch face when workflow starts
-    if (status == 'started' && _displayMode == DisplayMode.dashboard) {
-      _launchFace();
+    if (status == 'started') {
+      // Disable follow/track mode - task takes priority over autonomous behaviors
+      rosBridge.publishPersonFollower(false);
+      rosBridge.publishCenterOnHuman(false);
+
+      if (_displayMode == DisplayMode.dashboard) {
+        _launchFace();
+      }
     }
     
     // TODO: When we add AI conversation, open thought bubble on 'action' step type
@@ -427,12 +410,6 @@ class _HomePageState extends State<HomePage> {
             closeThoughtBubble();
           }
         });
-      }
-      
-      // Restart wake word when workflow finishes (robot arrived at destination)
-      if (_displayMode == DisplayMode.face) {
-        debugPrint('🎤 Workflow $status - restarting wake word');
-        WakeService.instance.start();
       }
     }
   }
@@ -458,9 +435,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
-  @override
   void dispose() {
     rosBridge.removeWorkflowStatusListener(_handleWorkflowStatus);
+    rosBridge.removeAgentListener(_agentListener);
     rosBridge.close();
     super.dispose();
   }
@@ -503,76 +480,115 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _launchFace() {
-    debugPrint('🎭 _launchFace() called - current mode: $_displayMode');
-    
+    debugPrint('🎭 _launchFace() called');
+
     setState(() => _displayMode = DisplayMode.face);
-    
-    // Start wake word listening when entering face mode (if idle)
-    if (conversationService.isIdle) {
-      WakeService.instance.start();
+
+    // Launch runs startup sequence (motion test only, no speech)
+    // Does NOT start conversation - user presses Play for that
+    debugPrint('🚀 Running startup sequence');
+    conversationService.runStartupSequence(
+      onComplete: () {
+        debugPrint('✅ Startup complete - ready state (press Play to start conversation)');
+        // Don't start conversation - just stay in ready state
+      },
+    );
+  }
+
+  void _startFace() {
+    debugPrint('▶️ _startFace() called - quick start with short intro');
+
+    setState(() => _displayMode = DisplayMode.face);
+
+    // Quick start with short intro (no motion test)
+    conversationService.runQuickStart(
+      onComplete: () {
+        debugPrint('✅ Quick start complete - ready state');
+      },
+    );
+  }
+
+  Future<void> _playFace() async {
+    debugPrint('▶️ _playFace() called - start/resume AI');
+
+    // If already in face mode, just start/resume conversation
+    if (_displayMode != DisplayMode.face) {
+      setState(() => _displayMode = DisplayMode.face);
+    }
+
+    // Start or resume AI conversation
+    if (conversationService.isPaused) {
+      debugPrint('▶️ Resuming conversation');
+      await conversationService.resumeConversation();
+      _faceKey.currentState?.setPaused(false);
+      rosBridge.publishVoicePlaying();
+    } else if (conversationService.isIdle) {
+      debugPrint('▶️ Starting new conversation');
+      await conversationService.startDefaultConversation();
+      _faceKey.currentState?.setPaused(false);
+      rosBridge.publishVoicePlaying();
     }
   }
 
-  void _exitToLaunch() {
-    // Stop AI conversation and clear context (like millie_mini)
-    conversationService.cancelConversation();
-    // Stop wake word when leaving face mode
-    WakeService.instance.stop();
+  Future<void> _exitToLaunch() async {
+    // Stop AI conversation and clear context
+    await conversationService.cancelConversation();
+    rosBridge.publishVoiceIdle();
     setState(() => _displayMode = DisplayMode.dashboard);
   }
 
-  /// Open the thought bubble (when ticket creation starts)
+  /// Open the thought bubble
   void openThoughtBubble() {
-    _orderDisplayKey.currentState?.openThoughtBubble();
+    _faceKey.currentState?.openThoughtBubble();
   }
 
   /// Close thought bubble and restore face
   void closeThoughtBubble() {
-    _orderDisplayKey.currentState?.closeThoughtBubble();
+    _faceKey.currentState?.closeThoughtBubble();
   }
 
   /// Add a processed order item (from LLM)
   void addOrderItem(String item) {
-    _orderDisplayKey.currentState?.addOrderItem(item);
+    _faceKey.currentState?.addOrderItem(item);
   }
 
   /// Set mouth speaking state
   void setSpeaking(bool speaking) {
-    _orderDisplayKey.currentState?.setSpeaking(speaking);
+    _faceKey.currentState?.setSpeaking(speaking);
   }
 
   @override
   Widget build(BuildContext context) {
     // Face mode - standalone (customer-facing)
     if (_displayMode == DisplayMode.face) {
-      return OrderDisplayPage(
-        key: _orderDisplayKey,
+      return FacePage(
+        key: _faceKey,
+        rosBridge: rosBridge,
+        faceId: _activeFaceId,
         onExit: _exitToLaunch,
         onPause: () {
-          debugPrint('⏸️ Pause pressed');
+          debugPrint('⏸️ Pausing voice (movement modes unaffected)');
           conversationService.pauseConversation();
-          _orderDisplayKey.currentState?.setPaused(true);
-          // Start wake word so "Hey Millie" can resume
-          WakeService.instance.start();
+          _faceKey.currentState?.setPaused(true);
+          rosBridge.publishVoicePaused();
+          // Note: Movement modes (wander, follow, patrol) are independent
+          // Use stop_robot voice command or controller buttons to stop movement
         },
         onPlay: () async {
           debugPrint('▶️ Play pressed');
           if (conversationService.isPaused) {
-            // Resume paused conversation - just start listening again
             debugPrint('▶️ Resuming paused conversation');
-            await conversationService.resumeConversation();
-            _orderDisplayKey.currentState?.setPaused(false);
+            await conversationService.resumeConversation(greeting: "I'm back! What did I miss?");
+            _faceKey.currentState?.setPaused(false);
+            rosBridge.publishVoicePlaying();
           } else if (conversationService.isIdle) {
-            // No active conversation - start default conversation
             debugPrint('🎯 Starting default conversation');
             await conversationService.startDefaultConversation();
           }
         },
         onRefresh: () async {
-          debugPrint('🔄 Refresh pressed - cancelling conversation and resetting counter');
+          debugPrint('🔄 Refresh pressed - cancelling conversation');
           await conversationService.cancelConversation();
-          conversationService.resetTicketCounter();
-          // Also cancel any running workflow
           rosBridge.publishWorkflowCancel();
         },
       );
@@ -671,19 +687,13 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildMainContent() {
     switch (_currentView) {
-      case MainView.tickets:
-        return TicketsPage(
-          key: _ticketsKey,
-          rosBridge: rosBridge,
-          onBack: () => setState(() => _currentView = MainView.launch),
-          onExit: () => setState(() => _currentView = MainView.launch),
-        );
       case MainView.locations:
         return LocationsPage(rosBridge: rosBridge);
       case MainView.launch:
         return LaunchPage(
           rosBridge: rosBridge,
           onLaunch: _launchFace,
+          onStart: _startFace,
         );
       case MainView.settings:
         return SettingsPage(

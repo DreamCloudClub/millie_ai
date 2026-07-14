@@ -1,19 +1,20 @@
 import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
-import '../widgets/eyes_widget.dart';
-import '../widgets/mouth_widget.dart';
 
-/// Launch Robot page - Agent profile card with Launch button
-/// Launches the Face display for customer interaction
+/// Launch Robot page - Agent profile card with Launch/Start buttons
+/// Launch = full startup sequence with greeting
+/// Start = quick transition to face, no sound
 class LaunchPage extends StatefulWidget {
   final RosBridge rosBridge;
   final VoidCallback onLaunch;
+  final VoidCallback onStart;
 
   const LaunchPage({
     super.key,
     required this.rosBridge,
     required this.onLaunch,
+    required this.onStart,
   });
 
   @override
@@ -21,56 +22,90 @@ class LaunchPage extends StatefulWidget {
 }
 
 class _LaunchPageState extends State<LaunchPage> {
-  // Agent info from robot (loaded from Profile settings)
+  // Agent info from robot
   String _robotName = 'Millie';
-  String _robotIdentity = '';
   String _selectedAgent = '';
   String _selectedVoice = 'nova';
-  
-  // Multi-listener references
-  late final void Function(CompanyInfoData) _companyInfoListener;
+  String _selectedVoiceMode = 'turn_taking';
+  String _selectedFaceId = '';
+
+  // Animal faces list (same as settings_page)
+  static const List<String> animalFaces = ['cat', 'dog', 'bear', 'bee', 'bird', 'crocodile', 'elephant', 'fish', 'lion', 'lobster', 'reptile', 'tiger'];
+
+  // Multi-listener reference
   late final void Function(List<AgentDefinition>) _agentListener;
-  
+
   @override
   void initState() {
     super.initState();
     _setupListeners();
   }
-  
+
   void _setupListeners() {
-    // Company info listener
-    _companyInfoListener = (info) {
-      if (mounted) {
-        setState(() {
-          _robotName = info.robotName.isNotEmpty ? info.robotName : 'Millie';
-          _robotIdentity = info.robotIdentity;
-          _selectedVoice = info.voice.isNotEmpty ? info.voice : 'nova';
-        });
-      }
-    };
-    widget.rosBridge.addCompanyInfoListener(_companyInfoListener);
-    
-    // Agents listener
+    // Agents listener - get all info from the default agent
     _agentListener = (agents) {
       if (mounted && agents.isNotEmpty) {
         setState(() {
-          final defaultAgent = agents.where((a) => a.isDefault).firstOrNull;
-          _selectedAgent = defaultAgent?.name ?? agents.first.name;
+          final defaultAgent = agents.where((a) => a.isDefault).firstOrNull ?? agents.first;
+          _robotName = defaultAgent.name;
+          _selectedAgent = defaultAgent.name;
+          _selectedFaceId = defaultAgent.faceId;
+          _selectedVoice = defaultAgent.voice.isNotEmpty ? defaultAgent.voice : 'nova';
+          _selectedVoiceMode = defaultAgent.voiceMode.isNotEmpty ? defaultAgent.voiceMode : 'turn_taking';
         });
       }
     };
     widget.rosBridge.addAgentListener(_agentListener);
-    
+
     // Request initial data
-    widget.rosBridge.requestCompanyInfo();
     widget.rosBridge.requestAgents();
   }
-  
+
   @override
   void dispose() {
-    widget.rosBridge.removeCompanyInfoListener(_companyInfoListener);
     widget.rosBridge.removeAgentListener(_agentListener);
     super.dispose();
+  }
+
+  Widget _buildRobotFace() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Eyes
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 380 * 0.24,
+              height: 380 * 0.32,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(380 * 0.024),
+              ),
+            ),
+            SizedBox(width: 380 * 0.08),
+            Container(
+              width: 380 * 0.24,
+              height: 380 * 0.32,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(380 * 0.024),
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 380 * 0.12),
+        // Mouth
+        Container(
+          width: 380 * 0.32,
+          height: 380 * 0.025,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(380 * 0.0125),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -118,93 +153,83 @@ class _LaunchPageState extends State<LaunchPage> {
                         color: Colors.black,
                         borderRadius: BorderRadius.circular(380 * 0.08),
                       ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          // Eyes
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Container(
-                                width: 380 * 0.24,
-                                height: 380 * 0.32,
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(380 * 0.024),
-                                ),
+                      child: animalFaces.contains(_selectedFaceId)
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(380 * 0.08),
+                              child: Image.asset(
+                                'assets/faces/$_selectedFaceId.png',
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => _buildRobotFace(),
                               ),
-                              SizedBox(width: 380 * 0.08),
-                              Container(
-                                width: 380 * 0.24,
-                                height: 380 * 0.32,
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(380 * 0.024),
-                                ),
-                              ),
-                            ],
-                          ),
-                          SizedBox(height: 380 * 0.12),
-                          // Mouth
-                          Container(
-                            width: 380 * 0.32,
-                            height: 380 * 0.025,
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(380 * 0.0125),
-                            ),
-                          ),
-                        ],
-                      ),
+                            )
+                          : _buildRobotFace(),
                     ),
                   ),
-                  
+
                   const SizedBox(height: AppSpacing.xl),
-                  
+
                   // Agent details
-                  _DetailRow(label: 'Robot', value: _robotName),
-                  if (_selectedAgent.isNotEmpty)
-                    _DetailRow(label: 'Agent', value: _selectedAgent),
+                  _DetailRow(label: 'Agent', value: _selectedAgent.isNotEmpty ? _selectedAgent : _robotName),
                   _DetailRow(label: 'Voice', value: _selectedVoice),
-                  if (_robotIdentity.isNotEmpty)
-                    _DetailRow(
-                      label: 'Identity',
-                      value: _robotIdentity.length > 50 
-                          ? '${_robotIdentity.substring(0, 50)}...' 
-                          : _robotIdentity,
-                    ),
-                  
+                  _DetailRow(label: 'Mode', value: _selectedVoiceMode == 'realtime' ? 'Realtime' : 'Turn Taking'),
+
                   const SizedBox(height: AppSpacing.xl),
-                  
-                  // Launch Button (Orange)
-                  GestureDetector(
-                    onTap: widget.onLaunch,
-                    child: Container(
-                      width: double.infinity,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: AppColors.danger,
-                        borderRadius: BorderRadius.circular(AppRadius.medium),
-                        border: Border.all(color: AppColors.dangerBright, width: 2),
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppColors.danger.withOpacity(0.4),
-                            blurRadius: 12,
-                            spreadRadius: 2,
-                          ),
-                        ],
-                      ),
-                      child: const Center(
-                        child: Text(
-                          'Launch',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
+
+                  // Launch and Play Buttons
+                  Row(
+                    children: [
+                      // Launch Button (Green) - Full startup sequence
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: widget.onLaunch,
+                          child: Container(
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: AppColors.success.withOpacity(0.3),
+                              borderRadius: BorderRadius.circular(AppRadius.medium),
+                              border: Border.all(color: AppColors.success, width: 2),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Launch',
+                                style: TextStyle(
+                                  color: AppColors.success,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+
+                      const SizedBox(width: AppSpacing.md),
+
+                      // Start Button (Blue) - Quick transition to face, no sound
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: widget.onStart,
+                          child: Container(
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: AppColors.accent.withOpacity(0.3),
+                              borderRadius: BorderRadius.circular(AppRadius.medium),
+                              border: Border.all(color: AppColors.accent, width: 2),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Start',
+                                style: TextStyle(
+                                  color: AppColors.accent,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -256,5 +281,3 @@ class _DetailRow extends StatelessWidget {
     );
   }
 }
-
-

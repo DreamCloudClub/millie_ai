@@ -1,42 +1,72 @@
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-
-import '../widgets/eyes_widget.dart';
-import '../widgets/mouth_widget.dart';
-import '../widgets/control_bar.dart';
 import '../utils/constants.dart';
+import '../utils/rosbridge.dart';
+import '../widgets/control_bar.dart';
 
-/// Face display page - shows robot's animated face
-/// Long-press to show control bar overlay
+/// Customer-facing order display with robot face and animated thought bubble
+/// Face shrinks and slides down when thought bubble opens
+/// Long-press to show control bar (like millie_mini FacePage)
 class FacePage extends StatefulWidget {
+  final RosBridge rosBridge;
   final VoidCallback onExit;
   final VoidCallback? onPause;
   final VoidCallback? onPlay;
   final VoidCallback? onRefresh;
-
+  final String faceId;
   const FacePage({
     super.key,
+    required this.rosBridge,
     required this.onExit,
     this.onPause,
     this.onPlay,
     this.onRefresh,
+    this.faceId = '',
   });
+
+  // Animal faces list
+  static const List<String> animalFaces = ['cat', 'dog', 'bear', 'bee', 'bird', 'crocodile', 'elephant', 'fish', 'lion', 'lobster', 'reptile', 'tiger'];
 
   @override
   State<FacePage> createState() => FacePageState();
 }
 
 class FacePageState extends State<FacePage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  
+  @override
+  bool get wantKeepAlive => true;
+  // Mouth animation
+  late final AnimationController _mouthCtrl;
   bool _speaking = false;
   bool _isPaused = false;
   bool _isSleeping = false;
+  bool _isListening = false;
+  bool _isProcessing = false;
   bool _isIdle = true;  // True when no active conversation
+  String _statusText = 'Ready';  // Idle state like millie_mini
+  
+  // Control bar overlay
   bool _showControlBar = false;
-  late final AnimationController _mouthCtrl;
-  String _statusText = 'Ready';
-
+  
+  // Thought bubble animation (controls face shrink + bubble expand)
+  late final AnimationController _thoughtCtrl;
+  bool _showThought = false;
+  
+  // Order items (processed by LLM, not raw transcript)
+  final List<String> _orderItems = [];
+  
+  // Face stays the same size now - just show bubble above
+  double get _faceScale => 1.0;  // No shrinking
+  double get _faceOffset => 0.0;  // No offset
+  
+  // Eye animations (glowing effects)
+  late final AnimationController _pulseCtrl;   // For speaking
+  late final AnimationController _breathCtrl;  // For listening
+  late Animation<double> _pulseAnimation;
+  late Animation<double> _breathAnimation;
+  late Animation<double> _opacityAnimation;
+  
   @override
   void initState() {
     super.initState();
@@ -49,35 +79,133 @@ class FacePageState extends State<FacePage>
       vsync: this,
       duration: const Duration(milliseconds: 450),
     );
-
     _mouthCtrl.addListener(() {
       if (mounted) setState(() {});
     });
+
+    // Thought bubble animation (smooth spring-like curve)
+    _thoughtCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _thoughtCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+    
+    // Pulse animation for speaking (subtle scale) - like millie_mini
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.06).animate(
+      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
+    );
+    
+    // Breath animation for listening (subtle scale + opacity) - like millie_mini
+    _breathCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
+    _breathAnimation = Tween<double>(begin: 1.0, end: 1.03).animate(
+      CurvedAnimation(parent: _breathCtrl, curve: Curves.easeInOut),
+    );
+    _opacityAnimation = Tween<double>(begin: 0.85, end: 1.0).animate(
+      CurvedAnimation(parent: _breathCtrl, curve: Curves.easeInOut),
+    );
+    
+    // Don't start animations in initState - wait for state changes
+    // Animations are controlled by setListening/setSpeaking
   }
 
-  /// Called when voice service indicates speaking state
+  /// Open thought bubble and shrink face
+  void openThoughtBubble() {
+    if (_showThought) return;
+    setState(() {
+      _showThought = true;
+      // Don't set status here - let speaking/listening state handle it
+    });
+    _thoughtCtrl.forward(from: 0.0);
+  }
+
+  /// Close thought bubble and restore face
+  void closeThoughtBubble() {
+    _thoughtCtrl.reverse().then((_) {
+      if (mounted) {
+        setState(() {
+          _showThought = false;
+          _orderItems.clear();
+          _statusText = 'Ready';
+        });
+      }
+    });
+  }
+
+  /// Add a processed order item (from LLM)
+  void addOrderItem(String item) {
+    setState(() {
+      _orderItems.add(item);
+    });
+  }
+
+  /// Clear all order items
+  void clearOrder() {
+    setState(() {
+      _orderItems.clear();
+    });
+  }
+
+  /// Set speaking state (animates mouth and eyes)
   void setSpeaking(bool speaking) {
+    if (!mounted) return;
+    
+    // Stop all eye animations first (like millie_mini)
+    _pulseCtrl.stop();
+    _breathCtrl.stop();
+    
     if (speaking) {
       _mouthCtrl.repeat();
+      // Start pulse animation for speaking
+      _pulseCtrl.repeat(reverse: true);
     } else {
       _mouthCtrl.stop();
       _mouthCtrl.value = 0.0;
+      // Don't auto-start breath here - let setListening handle it
     }
-
-    if (mounted) {
+    
       setState(() {
         _speaking = speaking;
-        _statusText = speaking ? 'Speaking...' : 'Listening';
+      if (speaking) {
+        _statusText = 'Speaking...';
+        }
+      // Don't change status when speaking stops - let setListening handle it
       });
-    }
   }
 
   /// Set paused state
+  /// When pausing: stop all animations and show paused status
+  /// When unpausing: don't change status - let setListening handle it
   void setPaused(bool paused) {
-    if (mounted) {
+    if (!mounted) return;
+    
+    if (paused) {
+      // Stop all animations when pausing
+      _mouthCtrl.stop();
+      _mouthCtrl.value = 0.0;
+      _pulseCtrl.stop();
+      _breathCtrl.stop();
+      
       setState(() {
-        _isPaused = paused;
-        _statusText = paused ? 'Paused' : 'Listening';
+        _isPaused = true;
+        _speaking = false;  // Clear speaking state
+        _isListening = false;  // Clear listening state
+        _isProcessing = false;  // Clear processing state
+        _statusText = 'Paused';
+      });
+    } else {
+      setState(() {
+        _isPaused = false;
+        // When unpausing, don't set status to 'Ready' - the listening callback will set 'Listening...'
+        // This matches millie_mini behavior where resume goes directly to listening state
       });
     }
   }
@@ -87,7 +215,7 @@ class FacePageState extends State<FacePage>
     if (mounted) {
       setState(() {
         _isSleeping = sleeping;
-        _statusText = sleeping ? 'Sleeping' : 'Listening';
+        _statusText = sleeping ? 'Ready' : 'Ready';  // Both are idle states
       });
     }
   }
@@ -104,6 +232,47 @@ class FacePageState extends State<FacePage>
     }
   }
 
+  /// Set listening state (like millie_mini)
+  void setListening(bool listening) {
+    if (!mounted) return;
+    
+    // Stop all eye animations first
+    _pulseCtrl.stop();
+    _breathCtrl.stop();
+    
+    if (listening && !_speaking) {
+      // Start breathing animation for listening
+      _breathCtrl.repeat(reverse: true);
+    }
+    
+    setState(() {
+      _isListening = listening;
+      if (listening) {
+        _statusText = 'Listening...';
+      } else if (!_speaking && !_isProcessing) {
+        _statusText = 'Ready';
+      }
+    });
+  }
+
+  /// Set processing state (like millie_mini - static, fully bright)
+  void setProcessing(bool processing) {
+    if (!mounted) return;
+    
+    if (processing) {
+      // Stop all animations - static bright
+      _pulseCtrl.stop();
+      _breathCtrl.stop();
+    }
+    
+    setState(() {
+      _isProcessing = processing;
+      if (processing) {
+        _statusText = 'Thinking...';
+      }
+    });
+  }
+
   /// Update status text
   void setStatus(String status) {
     if (mounted) {
@@ -112,7 +281,13 @@ class FacePageState extends State<FacePage>
   }
 
   void _handleTap() {
-    // Single tap - could be used for wake or other interaction
+    // Only pause if not already idle - no need to pause when in ready state
+    if (!_isIdle) {
+      widget.onPause?.call();
+    }
+    setState(() {
+      _showControlBar = true;
+    });
   }
 
   void _handleDoubleTap() {
@@ -145,7 +320,6 @@ class FacePageState extends State<FacePage>
   }
 
   void _handlePause() {
-    _hideControlBar();
     widget.onPause?.call();
   }
 
@@ -155,7 +329,7 @@ class FacePageState extends State<FacePage>
   }
 
   void _handleRefresh() {
-    _hideControlBar();
+    closeThoughtBubble();
     widget.onRefresh?.call();
   }
 
@@ -174,6 +348,9 @@ class FacePageState extends State<FacePage>
   @override
   void dispose() {
     _mouthCtrl.dispose();
+    _thoughtCtrl.dispose();
+    _pulseCtrl.dispose();
+    _breathCtrl.dispose();
     
     // Restore top bar when disposing
     SystemChrome.setEnabledSystemUIMode(
@@ -185,90 +362,317 @@ class FacePageState extends State<FacePage>
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
+    super.build(context);  // Required for AutomaticKeepAliveClientMixin
+    
     final screenW = MediaQuery.of(context).size.width;
     final screenH = MediaQuery.of(context).size.height;
     
-    final mouthOpen = _speaking
-        ? (0.5 + 0.5 * math.sin(2 * math.pi * _mouthCtrl.value))
-        : 0.0;
+    // Mouth no longer bounces - just uses glow animation like millie_mini
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _handleTap,
-        onDoubleTap: _handleDoubleTap,
-        onLongPress: _handleLongPress,
-        behavior: HitTestBehavior.opaque,
-        child: SafeArea(
-          child: Stack(
-            children: [
-              // Main Face Content
-              Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Spacer(flex: 1),
-                    
-                    // Eyes
-                    const EyesWidget(),
-                    
-                    SizedBox(height: screenH * 0.12),
-                    
-                    // Mouth
-                    MouthWidget(
-                      openAmount: mouthOpen,
-                      baseWidth: screenW * 0.4,
-                      height: 30,
-                      extraWidth: 12,
-                      radius: 28,
-                      color: Colors.white,
-                    ),
-                    
-                    const Spacer(flex: 1),
-                    
-                    // Status text
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-                      child: Text(
-                        _statusText,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.white.withOpacity(0.5),
-                        ),
-                      ),
-                    ),
-                  ],
+    // Eased animation value
+    final animValue = Curves.easeOutBack.transform(_thoughtCtrl.value);
+    
+    // Space between eyes and mouth (like millie_mini: screenHeight * 0.12)
+    final eyeMouthGap = screenH * 0.12;
+
+    return GestureDetector(
+      onTap: _handleTap,
+      onDoubleTap: _handleDoubleTap,
+      onLongPress: _handleLongPress,
+      behavior: HitTestBehavior.opaque,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // Full screen animal face (if selected)
+            if (FacePage.animalFaces.contains(widget.faceId))
+              Positioned.fill(
+                child: Image.asset(
+                  'assets/faces/${widget.faceId}.png',
+                  fit: BoxFit.cover,
                 ),
               ),
-              
-              // Control Bar Overlay
-              if (_showControlBar)
-                Stack(
-                  children: [
-                    // Backdrop that closes on tap
-                    GestureDetector(
-                      onTap: _hideControlBar,
-                      child: Container(
-                        color: Colors.black.withOpacity(0.5),
-                      ),
-                    ),
-                    // Control bar (bottom controls only - no onTickets)
-                        ControlBar(
-                          onPause: _handlePause,
-                          onPlay: _handlePlay,
-                          onRefresh: _handleRefresh,
-                          onExit: _handleExit,
-                          isPaused: _isPaused,
-                          isSleeping: _isSleeping,
-                          isIdle: _isIdle,
-                    ),
-                  ],
+            // Robot face content (centered eyes+mouth)
+            if (!FacePage.animalFaces.contains(widget.faceId))
+              SafeArea(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Spacer(flex: 1),
+                      _buildRobotFace(screenW, screenH, eyeMouthGap),
+                      const Spacer(flex: 1),
+                      const SizedBox(height: 50), // Space for status pill
+                    ],
+                  ),
                 ),
+              ),
+            // Status text (always on top, visible over animal faces)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 20,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    _statusText,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.8),
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // Control Bar Overlay
+            if (_showControlBar)
+              Stack(
+                children: [
+                  // Backdrop that closes on tap (semi-transparent)
+                  GestureDetector(
+                    onTap: _hideControlBar,
+                    child: Container(
+                      color: Colors.black.withOpacity(0.5),
+                    ),
+                  ),
+                  // Control bar (top nav + bottom controls)
+                  ControlBar(
+                    rosBridge: widget.rosBridge,
+                    onPause: _handlePause,
+                    onPlay: _handlePlay,
+                    onRefresh: _handleRefresh,
+                    onExit: _handleExit,
+                    onHide: _hideControlBar,
+                    isPaused: _isPaused,
+                    isSleeping: _isSleeping,
+                    isIdle: _isIdle,
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+
+  /// Get base opacity based on current state
+  double get _baseOpacity {
+    if (_isPaused || _isSleeping) return 0.7;
+    return 1.0;
+  }
+
+  /// Get glow intensity based on current state
+  double get _glowIntensity {
+    if (_isPaused || _isSleeping) return 0.2;
+    if (_isListening) return 0.4;
+    if (_isProcessing) return 0.5;
+    if (_speaking) return 0.6;
+    return 0.3;
+  }
+
+  Widget _buildRobotFace(double screenW, double screenH, double eyeMouthGap) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Eyes
+        _buildEyes(screenW, screenH),
+        // Space between eyes and mouth
+        SizedBox(height: eyeMouthGap),
+        // Mouth
+        _buildMouth(screenW),
+      ],
+    );
+  }
+
+  Widget _buildEyes(double screenWidth, double screenHeight) {
+    // Use millie_mini proportions - screen relative sizing
+    final eyeWidth = screenWidth * 0.32;
+    final eyeHeight = screenHeight * 0.28;
+    final eyeGap = screenWidth * 0.06;
+
+    return AnimatedBuilder(
+      animation: Listenable.merge([_pulseCtrl, _breathCtrl]),
+      builder: (context, child) {
+        double scale = 1.0;
+        double opacity = _baseOpacity;
+        
+        if (_speaking) {
+          scale = _pulseAnimation.value;
+        } else if (_isListening && !_isPaused && !_isSleeping) {
+          scale = _breathAnimation.value;
+          opacity = _opacityAnimation.value;
+        }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+            _buildEye(eyeWidth, eyeHeight, scale, opacity),
+            SizedBox(width: eyeGap),
+            _buildEye(eyeWidth, eyeHeight, scale, opacity),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildEye(double width, double height, double scale, double opacity) {
+    final borderRadius = width * 0.12;  // Slightly rounder
+    final glowIntensity = _glowIntensity;
+
+    return Transform.scale(
+      scale: scale,
+      child: Opacity(
+        opacity: opacity,
+        child: Container(
+          width: width,
+          height: height,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(borderRadius),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.white.withOpacity(glowIntensity),
+                blurRadius: 20 * glowIntensity * 2,
+                spreadRadius: 5 * glowIntensity,
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildMouth(double screenWidth) {
+    final mouthWidth = screenWidth * 0.50;
+    const closedHeight = 16.0;
+    const maxHeight = 200.0;
+    const itemHeight = 32.0;
+    const paddingHeight = 40.0;  // Match actual padding: 16 top + 24 bottom
+    
+    // Simple: expand only when items exist
+    final hasItems = _orderItems.isNotEmpty;
+    final contentHeight = paddingHeight + (_orderItems.length * itemHeight);
+    final targetHeight = hasItems 
+        ? contentHeight.clamp(closedHeight, maxHeight) 
+        : closedHeight;
+    
+    // Radius: pill when closed, rounded when open
+    final isOpen = targetHeight > closedHeight;
+    final topRadius = isOpen ? 20.0 : closedHeight / 2;
+    final bottomRadius = isOpen ? 20.0 : closedHeight / 2;
+    
+    // Glow
+    final glowIntensity = _speaking ? 0.5 : 0.2;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: hasItems ? Curves.easeOutBack : Curves.easeInCubic,
+      width: mouthWidth,
+      height: targetHeight,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(topRadius),
+          bottom: Radius.circular(bottomRadius),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.white.withOpacity(glowIntensity),
+            blurRadius: 15,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: hasItems
+          ? ClipRRect(
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(topRadius - 2),
+                bottom: Radius.circular(bottomRadius - 2),
+              ),
+              child: _buildMouthContent(),
+            )
+          : null,
+    );
+  }
+  
+  Widget _buildMouthContent() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(80, 16, 16, 24),  // 80 left padding
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,  // Left align
+        children: _orderItems.map((item) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(
+            item,
+            style: const TextStyle(
+              color: Colors.black,
+              fontSize: 20,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.left,
+          ),
+        )).toList(),
+      ),
+    );
+  }
+}
+
+/// Pulsing recording indicator dot
+class _PulsingDot extends StatefulWidget {
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: Colors.blue.withOpacity(0.5 + 0.5 * _controller.value),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.blue.withOpacity(0.4 * _controller.value),
+                blurRadius: 10,
+                spreadRadius: 3,
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

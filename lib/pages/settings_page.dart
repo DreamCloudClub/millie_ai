@@ -4,6 +4,7 @@ import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 import '../utils/robot_api.dart';
 import '../widgets/top_notification.dart';
+import '../services/button_config_service.dart';
 
 // Top-level state that persists across orientation changes
 _SettingsSection? _persistedSection;
@@ -92,21 +93,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   _SectionButton(
                     icon: Icons.psychology,
-                    label: 'AI Agents',
+                    label: 'Agents',
                     isActive: _currentSection == _SettingsSection.aiAgents,
                     onPressed: () => setState(() => _currentSection = _SettingsSection.aiAgents),
                   ),
                   _SectionButton(
-                    icon: Icons.videocam,
-                    label: 'Camera',
-                    isActive: _currentSection == _SettingsSection.camera,
-                    onPressed: () => setState(() => _currentSection = _SettingsSection.camera),
-                  ),
-                  _SectionButton(
-                    icon: Icons.gamepad,
-                    label: 'Controls',
-                    isActive: _currentSection == _SettingsSection.controls,
-                    onPressed: () => setState(() => _currentSection = _SettingsSection.controls),
+                    icon: Icons.memory,
+                    label: 'Memory',
+                    isActive: _currentSection == _SettingsSection.memory,
+                    onPressed: () => setState(() => _currentSection = _SettingsSection.memory),
                   ),
                   _SectionButton(
                     icon: Icons.person,
@@ -153,17 +148,15 @@ class _SettingsPageState extends State<SettingsPage> {
         return _ProfileSection(rosBridge: widget.rosBridge);
       case _SettingsSection.aiAgents:
         return _AIAgentsSection(rosBridge: widget.rosBridge);
-      case _SettingsSection.controls:
-        return const _ControlsSection();
-      case _SettingsSection.camera:
-        return const _CameraSection();
+      case _SettingsSection.memory:
+        return _MemorySection(rosBridge: widget.rosBridge);
       case _SettingsSection.about:
         return const _AboutSection();
     }
   }
 }
 
-enum _SettingsSection { robot, aiAgents, camera, controls, profile, about }
+enum _SettingsSection { robot, aiAgents, memory, profile, about }
 
 /// Section button in sidebar
 class _SectionButton extends StatelessWidget {
@@ -572,13 +565,22 @@ class _RobotSectionState extends State<_RobotSection> {
           
           _RobotModeButtonRow(
             currentMode: status.mode,
-            selectedMode: 'nav',  // Face tablet auto-selects nav mode
+            selectedMode: _selectedMode,
             rosRunning: status.rosRunning,
             loading: _loading,
-            onSelect: (_) {},  // No selection needed
-            onLaunch: () => _startRos('nav'),  // Always launch nav mode
+            onSelect: (mode) => setState(() => _selectedMode = mode),
+            onLaunch: () {
+              if (_selectedMode != null) {
+                _startRos(_selectedMode!);
+                setState(() => _selectedMode = null);
+              }
+            },
             onStop: _stopRos,
-            onRestart: () => _startRos('nav'),
+            onRestart: () {
+              if (_selectedMode != null) {
+                _startRos(_selectedMode!);
+              }
+            },
             onRefresh: _refreshConfig,
           ),
           
@@ -687,7 +689,7 @@ class _RobotStatusHeader extends StatelessWidget {
                 Text(
                   status.rosRunning
                       ? 'Mode: ${status.mode.toUpperCase()} • PID: ${status.pid}'
-                      : 'Launch in Navigation mode',
+                      : 'Select a mode and launch',
                   style: const TextStyle(color: AppColors.textSecondary),
                 ),
               ],
@@ -715,7 +717,9 @@ class _RobotStatusHeader extends StatelessWidget {
   
   Color _getModeColor(String mode) {
     switch (mode) {
-      case 'nav': return AppColors.success;
+      case 'main': return AppColors.success;
+      case 'mapping': return AppColors.dangerBright;
+      case 'nav': return AppColors.accent;
       default: return AppColors.accent;
     }
   }
@@ -747,94 +751,97 @@ class _RobotModeButtonRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Face tablet: auto-select nav mode, no need to choose
+    final bool canLaunch = !rosRunning && selectedMode != null;
+
     return Column(
       children: [
-        // Mode indicator (not a button on face tablet)
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(AppSpacing.lg),
-          decoration: BoxDecoration(
-            color: rosRunning 
-                ? AppColors.accent.withOpacity(0.15) 
-                : AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.medium),
-            border: Border.all(
-              color: rosRunning ? AppColors.accent : AppColors.border,
-              width: rosRunning ? 2 : 1,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.navigation,
-                color: rosRunning ? AppColors.accent : AppColors.textMuted,
-                size: 28,
-              ),
-              const SizedBox(width: AppSpacing.md),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Navigate Mode',
-                    style: TextStyle(
-                      color: rosRunning ? AppColors.accent : AppColors.textPrimary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Text(
-                    rosRunning ? 'Active' : 'Ready to launch',
-                    style: TextStyle(
-                      color: rosRunning ? AppColors.accent : AppColors.textMuted,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+        // Mode selection buttons row
+        Row(
+          children: [
+            Expanded(child: _RobotModeButton(
+              icon: Icons.gamepad,
+              label: 'Manual',
+              description: 'Joystick control',
+              mode: 'main',
+              modeColor: AppColors.success,  // Green
+              isRunning: rosRunning && currentMode == 'main',
+              isSelected: !rosRunning && (selectedMode == 'main' || selectedMode == null),
+              isDimmed: (!rosRunning && selectedMode != null && selectedMode != 'main') ||
+                        (rosRunning && currentMode != 'main'),
+              loading: loading,
+              onTap: rosRunning ? null : () => onSelect('main'),
+            )),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: _RobotModeButton(
+              icon: Icons.explore,
+              label: 'Mapping',
+              description: 'Create new map',
+              mode: 'mapping',
+              modeColor: AppColors.dangerBright,  // Bright orange
+              isRunning: rosRunning && currentMode == 'mapping',
+              isSelected: !rosRunning && (selectedMode == 'mapping' || selectedMode == null),
+              isDimmed: (!rosRunning && selectedMode != null && selectedMode != 'mapping') ||
+                        (rosRunning && currentMode != 'mapping'),
+              loading: loading,
+              onTap: rosRunning ? null : () => onSelect('mapping'),
+            )),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: _RobotModeButton(
+              icon: Icons.navigation,
+              label: 'Navigate',
+              description: 'Autonomous mode',
+              mode: 'nav',
+              modeColor: AppColors.accent,  // Blue
+              isRunning: rosRunning && currentMode == 'nav',
+              isSelected: !rosRunning && (selectedMode == 'nav' || selectedMode == null),
+              isDimmed: (!rosRunning && selectedMode != null && selectedMode != 'nav') ||
+                        (rosRunning && currentMode != 'nav'),
+              loading: loading,
+              onTap: rosRunning ? null : () => onSelect('nav'),
+            )),
+          ],
         ),
-        
-        // Launch/Stop button - always enabled (auto-nav mode)
+
+        // Launch/Stop button - requires mode selection
         const SizedBox(height: AppSpacing.lg),
         GestureDetector(
-          onTap: loading ? null : (rosRunning ? onStop : onLaunch),
+          onTap: loading ? null : (rosRunning ? onStop : (canLaunch ? onLaunch : null)),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
             width: double.infinity,
             height: 56,
             decoration: BoxDecoration(
-              color: rosRunning ? AppColors.danger : AppColors.success,
+              color: rosRunning
+                  ? AppColors.danger
+                  : (canLaunch ? AppColors.success : AppColors.surface),
               borderRadius: BorderRadius.circular(AppRadius.medium),
               border: Border.all(
-                color: rosRunning ? AppColors.dangerBright : AppColors.success,
+                color: rosRunning
+                    ? AppColors.dangerBright
+                    : (canLaunch ? AppColors.success : AppColors.border),
                 width: 2,
               ),
-              boxShadow: [
+              boxShadow: canLaunch || rosRunning ? [
                 BoxShadow(
                   color: (rosRunning ? AppColors.danger : AppColors.success).withOpacity(0.4),
                   blurRadius: 8,
                   spreadRadius: 1,
                 ),
-              ],
+              ] : null,
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
                   rosRunning ? Icons.stop_circle : Icons.play_circle,
-                  color: Colors.white,
+                  color: rosRunning || canLaunch ? Colors.white : AppColors.textMuted,
                   size: 28,
                 ),
                 const SizedBox(width: AppSpacing.sm),
                 Text(
                   rosRunning ? 'STOP' : 'LAUNCH',
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: rosRunning || canLaunch ? Colors.white : AppColors.textMuted,
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                   ),
@@ -843,7 +850,7 @@ class _RobotModeButtonRow extends StatelessWidget {
             ),
           ),
         ),
-        
+
         // Refresh button - darker blue when idle, grey when ROS is running
         const SizedBox(height: AppSpacing.sm),
         GestureDetector(
@@ -852,13 +859,13 @@ class _RobotModeButtonRow extends StatelessWidget {
             width: double.infinity,
             height: 56,
             decoration: BoxDecoration(
-              color: rosRunning 
-                  ? AppColors.surface 
+              color: rosRunning
+                  ? AppColors.surface
                   : AppColors.accent.withOpacity(0.15),
               borderRadius: BorderRadius.circular(AppRadius.medium),
               border: Border.all(
-                color: rosRunning 
-                    ? AppColors.border 
+                color: rosRunning
+                    ? AppColors.border
                     : AppColors.accent,
                 width: 2,
               ),
@@ -867,8 +874,8 @@ class _RobotModeButtonRow extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.change_circle, 
-                  color: rosRunning ? AppColors.textMuted : AppColors.accent, 
+                  Icons.change_circle,
+                  color: rosRunning ? AppColors.textMuted : AppColors.accent,
                   size: 28,
                 ),
                 const SizedBox(width: AppSpacing.sm),
@@ -884,7 +891,7 @@ class _RobotModeButtonRow extends StatelessWidget {
             ),
           ),
         ),
-        
+
       ],
     );
   }
@@ -1251,264 +1258,10 @@ class _RobotLogViewer extends StatelessWidget {
   }
 }
 
-/// Controls section - quick buttons editor
-class _ControlsSection extends StatelessWidget {
-  const _ControlsSection();
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.only(left: AppSpacing.lg, right: AppSpacing.lg, top: AppSpacing.xl, bottom: AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _SectionHeader(title: 'Quick Buttons'),
-          const SizedBox(height: AppSpacing.md),
-          
-          // Quick button grid editor
-          _SettingsCard(
-            children: [
-              const Text(
-                'Configure the 9 programmable buttons on the control panel.',
-                style: TextStyle(color: AppColors.textSecondary),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              
-              // 3x3 preview grid
-              SizedBox(
-                height: 200,
-                child: Column(
-                  children: List.generate(3, (row) {
-                    return Expanded(
-                      child: Row(
-                        children: List.generate(3, (col) {
-                          final index = row * 3 + col;
-                          return Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.all(AppSpacing.xs),
-                              child: _QuickButtonPreview(
-                                index: index,
-                                onEdit: () => _showEditButtonDialog(context, index),
-                              ),
-                            ),
-                          );
-                        }),
-                      ),
-                    );
-                  }),
-                ),
-              ),
-            ],
-          ),
-          
-          const SizedBox(height: AppSpacing.xl),
-          const _SectionHeader(title: 'Joystick Settings'),
-          const SizedBox(height: AppSpacing.md),
-          
-          _SettingsCard(
-            children: [
-              _SliderRow(
-                label: 'Max Speed',
-                value: 0.5,
-                onChanged: (v) {},
-              ),
-              const Divider(color: AppColors.border),
-              _SliderRow(
-                label: 'Rotation Speed',
-                value: 0.7,
-                onChanged: (v) {},
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showEditButtonDialog(BuildContext context, int index) {
-    showDialog(
-      context: context,
-      builder: (context) => _EditButtonDialog(buttonIndex: index),
-    );
-  }
-}
-
-/// Camera section
-class _CameraSection extends StatelessWidget {
-  const _CameraSection();
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.only(left: AppSpacing.lg, right: AppSpacing.lg, top: AppSpacing.xl, bottom: AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _SectionHeader(title: 'Camera Settings'),
-          const SizedBox(height: AppSpacing.md),
-          
-          _SettingsCard(
-            children: [
-              _ToggleRow(
-                label: 'Show Depth Overlay',
-                value: false,
-                onChanged: (v) {},
-              ),
-              const Divider(color: AppColors.border),
-              _ToggleRow(
-                label: 'Low Bandwidth Mode',
-                value: false,
-                onChanged: (v) {},
-              ),
-            ],
-          ),
-          
-          const SizedBox(height: AppSpacing.xl),
-          const _SectionHeader(title: 'Stream URL'),
-          const SizedBox(height: AppSpacing.md),
-          
-          _SettingsCard(
-            children: [
-              const Text(
-                'Video stream endpoint:',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Container(
-                padding: const EdgeInsets.all(AppSpacing.sm),
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(AppRadius.small),
-                ),
-                child: const Text(
-                  'http://192.168.1.14:8080/stream',
-                  style: TextStyle(color: AppColors.textMuted, fontFamily: 'monospace'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Company Info section - Business details
-// Daily hours for a single day
-class DailyHours {
-  final String day;
-  TimeOfDay? openTime;
-  TimeOfDay? closeTime;
-  bool isClosed;
-  
-  DailyHours({
-    required this.day,
-    this.openTime,
-    this.closeTime,
-    this.isClosed = false,
-  });
-  
-  String get displayText {
-    if (isClosed) return 'Closed';
-    if (openTime == null || closeTime == null) return 'Not set';
-    return '${_formatTime(openTime!)} - ${_formatTime(closeTime!)}';
-  }
-  
-  static String _formatTime(TimeOfDay time) {
-    final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
-    final minute = time.minute.toString().padLeft(2, '0');
-    final period = time.period == DayPeriod.am ? 'AM' : 'PM';
-    return '$hour:$minute $period';
-  }
-  
-  DailyHours copy() => DailyHours(
-    day: day,
-    openTime: openTime,
-    closeTime: closeTime,
-    isClosed: isClosed,
-  );
-}
-
-// Company policy
-class CompanyPolicy {
-  String title;
-  String description;
-  
-  CompanyPolicy({
-    this.title = '',
-    this.description = '',
-  });
-  
-  CompanyPolicy copy() => CompanyPolicy(title: title, description: description);
-}
-
-// Persisted company info data
-class CompanyInfo {
-  // Robot identity
-  String robotName;
-  String robotIdentity;
-  String basePersonality;
-  String baseSystemInstructions;
-  String voice;
-  
-  // Business info
-  String companyName;
-  String address;
-  String phone;
-  List<DailyHours> hours;
-  List<CompanyPolicy> policies;
-  
-  CompanyInfo({
-    this.robotName = '',
-    String? robotIdentity,
-    String? basePersonality,
-    String? baseSystemInstructions,
-    this.voice = 'nova',
-    this.companyName = '',
-    this.address = '',
-    this.phone = '',
-    List<DailyHours>? hours,
-    List<CompanyPolicy>? policies,
-  }) : robotIdentity = robotIdentity ?? _defaultRobotIdentity,
-       basePersonality = basePersonality ?? _defaultBasePersonality,
-       baseSystemInstructions = baseSystemInstructions ?? _defaultBaseSystemInstructions,
-       hours = hours ?? _defaultHours(),
-       policies = policies ?? [];
-  
-  // Default robot identity context
-  static const String _defaultRobotIdentity = '''You are a friendly service robot. You are a physical robot with wheels, not a chatbot or language model. You can navigate physical spaces and interact with people through voice conversation. You cannot browse the internet or access external systems beyond your local knowledge.''';
-  
-  // Default personality
-  static const String _defaultBasePersonality = '''You are friendly, helpful, and professional. You speak clearly and concisely. You maintain a warm but efficient tone. You are patient and understanding with customers.''';
-  
-  // Default system instructions  
-  static const String _defaultBaseSystemInstructions = '''Keep responses brief and conversational - aim for 1-2 sentences when possible. If you don't know something, say so honestly and offer alternatives. Always be polite and respectful. If a request is beyond your capabilities, offer to get a human staff member.''';
-  
-  static List<DailyHours> _defaultHours() => [
-    DailyHours(day: 'Sunday'),
-    DailyHours(day: 'Monday'),
-    DailyHours(day: 'Tuesday'),
-    DailyHours(day: 'Wednesday'),
-    DailyHours(day: 'Thursday'),
-    DailyHours(day: 'Friday'),
-    DailyHours(day: 'Saturday'),
-  ];
-  
-  bool get isEmpty => robotName.isEmpty && companyName.isEmpty && address.isEmpty && phone.isEmpty && 
-    hours.every((h) => h.openTime == null && h.closeTime == null && !h.isClosed) &&
-    policies.isEmpty;
-    
-  bool get hasHours => hours.any((h) => h.openTime != null || h.closeTime != null || h.isClosed);
-  
-  // Voice options for OpenAI TTS
-  static const List<String> voiceOptions = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
-}
-
-CompanyInfo _savedCompanyInfo = CompanyInfo();
-
+/// User Profile section - Simple user info
 class _ProfileSection extends StatefulWidget {
   final RosBridge rosBridge;
-  
+
   const _ProfileSection({required this.rosBridge});
 
   @override
@@ -1517,547 +1270,223 @@ class _ProfileSection extends StatefulWidget {
 
 class _ProfileSectionState extends State<_ProfileSection> {
   bool _isEditing = false;
-  int? _editingPolicyIndex; // null = not editing, -1 = adding new
-  
-  final _robotNameController = TextEditingController();
-  final _robotIdentityController = TextEditingController();
-  final _basePersonalityController = TextEditingController();
-  final _baseSystemInstructionsController = TextEditingController();
-  String _selectedVoice = 'nova';
-  
-  final _companyNameController = TextEditingController();
-  final _addressController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _policyTitleController = TextEditingController();
-  final _policyDescController = TextEditingController();
-  
-  List<DailyHours> _editingHours = [];
-  List<CompanyPolicy> _editingPolicies = [];
-  
+  bool _isConnected = false;
+
+  final _usernameController = TextEditingController();
+  final _pronounsController = TextEditingController();
+  final _bioController = TextEditingController();
+
   // Multi-listener reference
-  late final void Function(CompanyInfoData) _companyInfoListener;
+  late final void Function(UserProfile) _userProfileListener;
 
   @override
   void initState() {
     super.initState();
-    _setupCompanyInfoListener();
-    _requestCompanyInfo();
-    _loadSavedData();
+    _isConnected = widget.rosBridge.isConnected;
+    widget.rosBridge.onConnectionChange = _onConnectionChange;
+    _setupUserProfileListener();
+    widget.rosBridge.requestUserProfile();
   }
-  
-  void _setupCompanyInfoListener() {
-    _companyInfoListener = (info) {
-      // Convert from ROS format to local format
-      _savedCompanyInfo = CompanyInfo(
-        robotName: info.robotName,
-        robotIdentity: info.robotIdentity.isNotEmpty ? info.robotIdentity : null,
-        basePersonality: info.basePersonality.isNotEmpty ? info.basePersonality : null,
-        baseSystemInstructions: info.baseSystemInstructions.isNotEmpty ? info.baseSystemInstructions : null,
-        voice: info.voice,
-        companyName: info.companyName,
-        address: info.address,
-        phone: info.phone,
-        hours: info.hours.map((h) => DailyHours(
-          day: h.day,
-          openTime: _parseTimeString(h.openTime),
-          closeTime: _parseTimeString(h.closeTime),
-          isClosed: h.isClosed,
-        )).toList(),
-        policies: info.policies.map((p) => CompanyPolicy(
-          title: p.title,
-          description: p.description,
-        )).toList(),
-      );
+
+  void _onConnectionChange(bool connected) {
+    if (mounted) {
+      setState(() => _isConnected = connected);
+    }
+  }
+
+  void _setupUserProfileListener() {
+    _userProfileListener = (profile) {
       if (mounted && !_isEditing) {
+        _usernameController.text = profile.username;
+        _pronounsController.text = profile.pronouns;
+        _bioController.text = profile.bio;
         setState(() {});
       }
     };
-    widget.rosBridge.addCompanyInfoListener(_companyInfoListener);
-  }
-  
-  TimeOfDay? _parseTimeString(String? timeStr) {
-    if (timeStr == null || timeStr.isEmpty) return null;
-    try {
-      // Parse time like "9:00 AM" or "5:30 PM"
-      final parts = timeStr.split(' ');
-      if (parts.length != 2) return null;
-      final timeParts = parts[0].split(':');
-      if (timeParts.length != 2) return null;
-      var hour = int.parse(timeParts[0]);
-      final minute = int.parse(timeParts[1]);
-      final isPM = parts[1].toUpperCase() == 'PM';
-      if (isPM && hour != 12) hour += 12;
-      if (!isPM && hour == 12) hour = 0;
-      return TimeOfDay(hour: hour, minute: minute);
-    } catch (e) {
-      return null;
-    }
-  }
-  
-  void _requestCompanyInfo() {
-    widget.rosBridge.requestCompanyInfo();
-  }
-  
-  void _loadSavedData() {
-    // Robot identity
-    _robotNameController.text = _savedCompanyInfo.robotName;
-    _robotIdentityController.text = _savedCompanyInfo.robotIdentity;
-    _basePersonalityController.text = _savedCompanyInfo.basePersonality;
-    _baseSystemInstructionsController.text = _savedCompanyInfo.baseSystemInstructions;
-    _selectedVoice = _savedCompanyInfo.voice;
-    
-    // Business info
-    _companyNameController.text = _savedCompanyInfo.companyName;
-    _addressController.text = _savedCompanyInfo.address;
-    _phoneController.text = _savedCompanyInfo.phone;
-    // Use saved hours if available, otherwise use default 7-day schedule
-    _editingHours = _savedCompanyInfo.hours.isNotEmpty 
-        ? _savedCompanyInfo.hours.map((h) => h.copy()).toList()
-        : CompanyInfo._defaultHours();
-    _editingPolicies = _savedCompanyInfo.policies.map((p) => p.copy()).toList();
+    widget.rosBridge.addUserProfileListener(_userProfileListener);
   }
 
   @override
   void dispose() {
-    widget.rosBridge.removeCompanyInfoListener(_companyInfoListener);
-    _robotNameController.dispose();
-    _robotIdentityController.dispose();
-    _basePersonalityController.dispose();
-    _baseSystemInstructionsController.dispose();
-    _companyNameController.dispose();
-    _addressController.dispose();
-    _phoneController.dispose();
-    _policyTitleController.dispose();
-    _policyDescController.dispose();
+    widget.rosBridge.removeUserProfileListener(_userProfileListener);
+    _usernameController.dispose();
+    _pronounsController.dispose();
+    _bioController.dispose();
     super.dispose();
   }
 
   void _enterEditMode() {
-    _loadSavedData();
-    setState(() {
-      _isEditing = true;
-      _editingPolicyIndex = null;
-    });
+    setState(() => _isEditing = true);
   }
 
   void _save() {
-    // Save to persistent state
-    _savedCompanyInfo = CompanyInfo(
-      robotName: _robotNameController.text,
-      robotIdentity: _robotIdentityController.text,
-      basePersonality: _basePersonalityController.text,
-      baseSystemInstructions: _baseSystemInstructionsController.text,
-      voice: _selectedVoice,
-      companyName: _companyNameController.text,
-      address: _addressController.text,
-      phone: _phoneController.text,
-      hours: _editingHours.map((h) => h.copy()).toList(),
-      policies: _editingPolicies.map((p) => p.copy()).toList(),
+    final profile = UserProfile(
+      username: _usernameController.text.trim(),
+      pronouns: _pronounsController.text.trim(),
+      bio: _bioController.text.trim(),
     );
-    
-    // Save to robot via ROS
-    print("💾 Saving profile info to robot...");
-    final rosInfo = CompanyInfoData(
-      robotName: _savedCompanyInfo.robotName,
-      robotIdentity: _savedCompanyInfo.robotIdentity,
-      basePersonality: _savedCompanyInfo.basePersonality,
-      baseSystemInstructions: _savedCompanyInfo.baseSystemInstructions,
-      voice: _savedCompanyInfo.voice,
-      companyName: _savedCompanyInfo.companyName,
-      address: _savedCompanyInfo.address,
-      phone: _savedCompanyInfo.phone,
-      hours: _savedCompanyInfo.hours.map((h) => DailyHoursData(
-        day: h.day,
-        openTime: h.openTime != null ? DailyHours._formatTime(h.openTime!) : null,
-        closeTime: h.closeTime != null ? DailyHours._formatTime(h.closeTime!) : null,
-        isClosed: h.isClosed,
-      )).toList(),
-      policies: _savedCompanyInfo.policies.map((p) => PolicyData(
-        title: p.title,
-        description: p.description,
-      )).toList(),
-    );
-    widget.rosBridge.publishSaveCompanyInfo(rosInfo);
-    
+
+    widget.rosBridge.publishSaveUserProfile(profile);
+
     setState(() => _isEditing = false);
     TopNotification.show(context, message: 'Profile saved', backgroundColor: AppColors.success);
   }
-  
-  Future<void> _pickTime(DailyHours day, bool isOpen) async {
-    final initial = isOpen ? (day.openTime ?? const TimeOfDay(hour: 9, minute: 0))
-                           : (day.closeTime ?? const TimeOfDay(hour: 17, minute: 0));
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: initial,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.dark(
-              primary: AppColors.accent,
-              surface: AppColors.surface,
-            ),
-          ),
-          child: child!,
-        );
-      },
-    );
-    if (picked != null) {
-      setState(() {
-        if (isOpen) {
-          day.openTime = picked;
-        } else {
-          day.closeTime = picked;
-        }
-        day.isClosed = false;
-      });
+
+  void _cancel() {
+    // Reload from cached data
+    final profile = widget.rosBridge.userProfile;
+    if (profile != null) {
+      _usernameController.text = profile.username;
+      _pronounsController.text = profile.pronouns;
+      _bioController.text = profile.bio;
     }
-  }
-  
-  void _toggleClosed(DailyHours day) {
-    setState(() {
-      day.isClosed = !day.isClosed;
-      if (day.isClosed) {
-        day.openTime = null;
-        day.closeTime = null;
-      }
-    });
-  }
-  
-  void _startEditingPolicy(int index) {
-    final policy = _editingPolicies[index];
-    _policyTitleController.text = policy.title;
-    _policyDescController.text = policy.description;
-    setState(() => _editingPolicyIndex = index);
-  }
-  
-  void _startAddingPolicy() {
-    _policyTitleController.clear();
-    _policyDescController.clear();
-    setState(() => _editingPolicyIndex = -1);
-  }
-  
-  void _savePolicy() {
-    final title = _policyTitleController.text.trim();
-    final desc = _policyDescController.text.trim();
-    if (title.isEmpty) return;
-    
-    setState(() {
-      if (_editingPolicyIndex == -1) {
-        // Adding new
-        _editingPolicies.add(CompanyPolicy(title: title, description: desc));
-      } else if (_editingPolicyIndex != null) {
-        // Editing existing
-        _editingPolicies[_editingPolicyIndex!] = CompanyPolicy(title: title, description: desc);
-      }
-      _editingPolicyIndex = null;
-    });
-  }
-  
-  void _deletePolicy() {
-    if (_editingPolicyIndex != null && _editingPolicyIndex! >= 0) {
-      setState(() {
-        _editingPolicies.removeAt(_editingPolicyIndex!);
-        _editingPolicyIndex = null;
-      });
-    }
-  }
-  
-  void _cancelPolicyEdit() {
-    setState(() => _editingPolicyIndex = null);
+    setState(() => _isEditing = false);
   }
 
   @override
   Widget build(BuildContext context) {
     return _isEditing ? _buildEditView() : _buildDisplayView();
   }
-  
+
   Widget _buildDisplayView() {
-    final info = _savedCompanyInfo;
-    
+    final profile = widget.rosBridge.userProfile;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(AppSpacing.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header with edit button
+          // Header with connection status and edit button
           Row(
             children: [
               const Icon(Icons.person, color: AppColors.accent, size: 24),
               const SizedBox(width: AppSpacing.sm),
               const Text(
-                'Profile',
+                'User Profile',
                 style: TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              const SizedBox(width: AppSpacing.sm),
+              // Connection status indicator
+              Icon(
+                _isConnected ? Icons.cloud_done : Icons.cloud_off,
+                color: _isConnected ? AppColors.success : AppColors.textMuted,
+                size: 18,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                _isConnected ? 'Connected' : 'Offline',
+                style: TextStyle(
+                  color: _isConnected ? AppColors.success : AppColors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
               const Spacer(),
-              GestureDetector(
-                onTap: _enterEditMode,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(color: AppColors.accent),
-                  ),
-                  child: const Text(
-                    'Edit',
-                    style: TextStyle(
-                      color: AppColors.accent,
-                      fontWeight: FontWeight.bold,
+              // Only show Edit button when connected
+              if (_isConnected)
+                GestureDetector(
+                  onTap: _enterEditMode,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md,
+                      vertical: AppSpacing.sm,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      border: Border.all(color: AppColors.accent),
+                    ),
+                    child: const Text(
+                      'Edit',
+                      style: TextStyle(
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),
-              ),
             ],
           ),
-          
+
           const SizedBox(height: AppSpacing.lg),
-          
-          // Display saved info
-          if (info.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(AppSpacing.xl),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.medium),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: const Center(
-                child: Text(
-                  'No profile saved yet.\nTap Edit to add your robot and business details.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 14,
+
+          // Profile card
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildDisplayField('Username', profile?.username.isNotEmpty == true ? profile!.username : 'Not set'),
+                const SizedBox(height: AppSpacing.md),
+                _buildDisplayField('Pronouns', profile?.pronouns.isNotEmpty == true ? profile!.pronouns : 'Not set'),
+                const SizedBox(height: AppSpacing.md),
+                _buildDisplayField('About Me', profile?.bio.isNotEmpty == true ? profile!.bio : 'Tell the robot about yourself...'),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+
+          // Help text
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            decoration: BoxDecoration(
+              color: AppColors.accent.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(AppRadius.small),
+              border: Border.all(color: AppColors.accent.withOpacity(0.3)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline, color: AppColors.accent, size: 20),
+                SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    'Your profile helps the robot know who you are and personalize interactions.',
+                    style: TextStyle(color: AppColors.accent, fontSize: 13),
                   ),
                 ),
-              ),
-            )
-          else ...[
-            // Robot section container
-            _buildSectionHeader('Robot', Icons.smart_toy),
-            const SizedBox(height: AppSpacing.sm),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(AppSpacing.lg),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.medium),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (info.robotName.isNotEmpty) ...[
-                    _buildDisplayField('Robot Name', info.robotName),
-                    const SizedBox(height: AppSpacing.lg),
-                  ],
-                  _buildDisplayField('Voice', '${info.voice.substring(0, 1).toUpperCase()}${info.voice.substring(1)} - ${_getVoiceDescription(info.voice)}'),
-                  const SizedBox(height: AppSpacing.lg),
-                  _buildDisplayFieldTruncated('Robot Identity', info.robotIdentity),
-                  const SizedBox(height: AppSpacing.lg),
-                  _buildDisplayFieldTruncated('Base Personality', info.basePersonality),
-                  const SizedBox(height: AppSpacing.lg),
-                  _buildDisplayFieldTruncated('Base Instructions', info.baseSystemInstructions),
-                ],
-              ),
+              ],
             ),
-            
-            const SizedBox(height: AppSpacing.lg),
-            
-            // Business section container
-            _buildSectionHeader('Business', Icons.business),
-            const SizedBox(height: AppSpacing.sm),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(AppSpacing.lg),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.medium),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (info.companyName.isNotEmpty) ...[
-                    _buildDisplayField('Company Name', info.companyName),
-                    const SizedBox(height: AppSpacing.lg),
-                  ],
-                  if (info.address.isNotEmpty) ...[
-                    _buildDisplayField('Address', info.address),
-                    const SizedBox(height: AppSpacing.lg),
-                  ],
-                  if (info.phone.isNotEmpty) ...[
-                    _buildDisplayField('Phone', info.phone),
-                    const SizedBox(height: AppSpacing.lg),
-                  ],
-                  if (info.hasHours) ...[
-                    _buildHoursDisplay(info.hours),
-                    const SizedBox(height: AppSpacing.lg),
-                  ],
-                  if (info.policies.isNotEmpty)
-                    _buildPoliciesDisplay(info.policies),
-                  if (info.companyName.isEmpty && info.address.isEmpty && info.phone.isEmpty && !info.hasHours && info.policies.isEmpty)
-                    Text(
-                      'No business info added yet.',
-                      style: TextStyle(color: AppColors.textMuted.withOpacity(0.7), fontSize: 14),
-                    ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ],
       ),
     );
   }
-  
-  Widget _buildDisplayFieldTruncated(String label, String value, {int maxLength = 80}) {
-    final truncated = value.length > maxLength 
-        ? '${value.substring(0, maxLength).trim()}...' 
-        : value;
+
+  Widget _buildDisplayField(String label, String value) {
+    final isPlaceholder = value.contains('Not set') || value.contains('Tell the robot');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
           style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
+            color: AppColors.textMuted,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
           ),
         ),
-        const SizedBox(height: AppSpacing.sm),
+        const SizedBox(height: 4),
         Text(
-          truncated,
+          value,
           style: TextStyle(
-            color: AppColors.textPrimary.withOpacity(0.8),
-            fontSize: 14,
-            fontStyle: FontStyle.italic,
+            color: isPlaceholder ? AppColors.textMuted : AppColors.textPrimary,
+            fontSize: 15,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildDisplayField(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        Text(
-          value,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 18,
-          ),
-        ),
-      ],
-    );
-  }
-  
-  Widget _buildHoursDisplay(List<DailyHours> hours) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Hours of Operation',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        ...hours.where((h) => h.openTime != null || h.closeTime != null || h.isClosed).map((h) => Padding(
-          padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 90,
-                child: Text(
-                  h.day,
-                  style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-                ),
-              ),
-              Text(
-                h.displayText,
-                style: TextStyle(
-                  color: h.isClosed ? AppColors.textMuted : AppColors.textPrimary,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        )),
-      ],
-    );
-  }
-  
-  Widget _buildPoliciesDisplay(List<CompanyPolicy> policies) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'General Policies',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        ...policies.map((p) => Container(
-          width: double.infinity,
-          margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-          padding: const EdgeInsets.all(AppSpacing.md),
-          decoration: BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.circular(AppRadius.small),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                p.title,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              if (p.description.isNotEmpty) ...[
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  p.description,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        )),
-      ],
-    );
-  }
-  
   Widget _buildEditView() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(AppSpacing.lg),
@@ -2077,582 +1506,106 @@ class _ProfileSectionState extends State<_ProfileSection> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const Spacer(),
-              // Cancel button
-              GestureDetector(
-                onTap: () => setState(() => _isEditing = false),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
+            ],
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+
+          // Form
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildTextField(
+                  label: 'Username',
+                  controller: _usernameController,
+                  hint: 'What should the robot call you?',
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(
+                  label: 'Pronouns',
+                  controller: _pronounsController,
+                  hint: 'e.g., he/him, she/her, they/them',
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(
+                  label: 'About Me',
+                  controller: _bioController,
+                  hint: 'Tell the robot about yourself...',
+                  maxLines: 5,
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+
+          // Action buttons
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: _cancel,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'Cancel',
+                        style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
                   ),
-                  decoration: BoxDecoration(
-                    color: AppColors.danger.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(color: AppColors.dangerBright),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(
-                      color: AppColors.dangerBright,
-                      fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: GestureDetector(
+                  onTap: _save,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent,
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'Save',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
             ],
           ),
-          
-          const SizedBox(height: AppSpacing.lg),
-          
-          // Robot Info section
-          _buildSectionHeader('Robot', Icons.smart_toy),
-          const SizedBox(height: AppSpacing.sm),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildTextField(
-                  controller: _robotNameController,
-                  label: 'Robot Name',
-                  hint: 'Enter robot name (e.g., Millie)',
-                  textCapitalization: TextCapitalization.words,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                // Voice selector
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Voice',
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                      decoration: BoxDecoration(
-                        color: AppColors.background,
-                        borderRadius: BorderRadius.circular(AppRadius.small),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _selectedVoice,
-                          isExpanded: true,
-                          dropdownColor: AppColors.surface,
-                          items: CompanyInfo.voiceOptions.map((voice) => DropdownMenuItem(
-                            value: voice,
-                            child: Text(
-                              voice.substring(0, 1).toUpperCase() + voice.substring(1),
-                              style: const TextStyle(color: AppColors.textPrimary),
-                            ),
-                          )).toList(),
-                          onChanged: (value) {
-                            if (value != null) setState(() => _selectedVoice = value);
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      _getVoiceDescription(_selectedVoice),
-                      style: TextStyle(color: AppColors.textMuted.withOpacity(0.7), fontSize: 11),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _robotIdentityController,
-                  label: 'Robot Identity',
-                  hint: 'Core identity context (e.g., "You are a physical robot...")',
-                  maxLines: 5,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _basePersonalityController,
-                  label: 'Base Personality & Tone',
-                  hint: 'Foundational personality traits',
-                  maxLines: 5,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _baseSystemInstructionsController,
-                  label: 'Base System Instructions',
-                  hint: 'Core behavioral rules',
-                  maxLines: 5,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-              ],
-            ),
-          ),
-          
-          const SizedBox(height: AppSpacing.lg),
-          
-          // Business Info section
-          _buildSectionHeader('Business', Icons.business),
-          const SizedBox(height: AppSpacing.sm),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildTextField(
-                  controller: _companyNameController,
-                  label: 'Company Name',
-                  hint: 'Enter company name',
-                  textCapitalization: TextCapitalization.words,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _addressController,
-                  label: 'Address',
-                  hint: 'Enter address',
-                  maxLines: 2,
-                  textCapitalization: TextCapitalization.words,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _phoneController,
-                  label: 'Phone',
-                  hint: 'Enter phone number',
-                  keyboardType: TextInputType.phone,
-                ),
-              ],
-            ),
-          ),
-          
-          const SizedBox(height: AppSpacing.lg),
-          
-          // Hours section
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Hours of Operation',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                ..._editingHours.map((day) => _buildDayRow(day)),
-              ],
-            ),
-          ),
-          
-          const SizedBox(height: AppSpacing.lg),
-          
-          // Policies section
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Text(
-                      'General Policies',
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const Spacer(),
-                    if (_editingPolicyIndex == null)
-                      GestureDetector(
-                        onTap: _startAddingPolicy,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: AppSpacing.sm,
-                            vertical: AppSpacing.xs,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.accent.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(AppRadius.small),
-                            border: Border.all(color: AppColors.accent),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.add, color: AppColors.accent, size: 16),
-                              SizedBox(width: 4),
-                              Text(
-                                'Add',
-                                style: TextStyle(
-                                  color: AppColors.accent,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.md),
-                
-                // Policy editor or list
-                if (_editingPolicyIndex != null)
-                  _buildPolicyEditor()
-                else
-                  ..._editingPolicies.asMap().entries.map((e) => _buildPolicyItem(e.key, e.value)),
-                  
-                if (_editingPolicies.isEmpty && _editingPolicyIndex == null)
-                  const Center(
-                    child: Text(
-                      'No policies added yet',
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          
-          const SizedBox(height: AppSpacing.xl),
-          
-          // Full-width Save button
-          GestureDetector(
-            onTap: _save,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(AppRadius.small),
-                border: Border.all(color: AppColors.accent),
-              ),
-              child: const Center(
-                child: Text(
-                  'Save',
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          ),
         ],
       ),
-    );
-  }
-  
-  Widget _buildDayRow(DailyHours day) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 90,
-            child: Text(
-              day.day,
-              style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-            ),
-          ),
-          // Open time
-          Expanded(
-            child: GestureDetector(
-              onTap: day.isClosed ? null : () => _pickTime(day, true),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.sm,
-                  vertical: AppSpacing.sm,
-                ),
-                decoration: BoxDecoration(
-                  color: day.isClosed ? AppColors.background.withOpacity(0.5) : AppColors.background,
-                  borderRadius: BorderRadius.circular(AppRadius.small),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Text(
-                  day.openTime != null ? DailyHours._formatTime(day.openTime!) : 'Open',
-                  style: TextStyle(
-                    color: day.isClosed ? AppColors.textMuted : 
-                           (day.openTime != null ? AppColors.textPrimary : AppColors.textMuted),
-                    fontSize: 13,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: AppSpacing.xs),
-            child: Text('-', style: TextStyle(color: AppColors.textMuted)),
-          ),
-          // Close time
-          Expanded(
-            child: GestureDetector(
-              onTap: day.isClosed ? null : () => _pickTime(day, false),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.sm,
-                  vertical: AppSpacing.sm,
-                ),
-                decoration: BoxDecoration(
-                  color: day.isClosed ? AppColors.background.withOpacity(0.5) : AppColors.background,
-                  borderRadius: BorderRadius.circular(AppRadius.small),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Text(
-                  day.closeTime != null ? DailyHours._formatTime(day.closeTime!) : 'Close',
-                  style: TextStyle(
-                    color: day.isClosed ? AppColors.textMuted : 
-                           (day.closeTime != null ? AppColors.textPrimary : AppColors.textMuted),
-                    fontSize: 13,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: AppSpacing.sm),
-          // Closed toggle
-          GestureDetector(
-            onTap: () => _toggleClosed(day),
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.sm,
-                vertical: AppSpacing.sm,
-              ),
-              decoration: BoxDecoration(
-                color: day.isClosed ? AppColors.danger.withOpacity(0.15) : Colors.transparent,
-                borderRadius: BorderRadius.circular(AppRadius.small),
-                border: Border.all(
-                  color: day.isClosed ? AppColors.danger : AppColors.border,
-                ),
-              ),
-              child: Text(
-                'Closed',
-                style: TextStyle(
-                  color: day.isClosed ? AppColors.danger : AppColors.textMuted,
-                  fontSize: 12,
-                  fontWeight: day.isClosed ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildPolicyItem(int index, CompanyPolicy policy) {
-    return GestureDetector(
-      onTap: () => _startEditingPolicy(index),
-      child: Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-        padding: const EdgeInsets.all(AppSpacing.md),
-        decoration: BoxDecoration(
-          color: AppColors.background,
-          borderRadius: BorderRadius.circular(AppRadius.small),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    policy.title,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  if (policy.description.isNotEmpty) ...[
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      policy.description,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 13,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const Icon(Icons.edit, color: AppColors.textMuted, size: 18),
-          ],
-        ),
-      ),
-    );
-  }
-  
-  Widget _buildPolicyEditor() {
-    final isNew = _editingPolicyIndex == -1;
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(AppRadius.small),
-        border: Border.all(color: AppColors.accent),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildTextField(
-            controller: _policyTitleController,
-            label: 'Policy Title',
-            hint: 'Enter policy title',
-            textCapitalization: TextCapitalization.words,
-          ),
-          const SizedBox(height: AppSpacing.md),
-          _buildTextField(
-            controller: _policyDescController,
-            label: 'Policy Description',
-            hint: 'Describe this policy',
-            maxLines: 3,
-            textCapitalization: TextCapitalization.sentences,
-          ),
-          const SizedBox(height: AppSpacing.lg),
-          
-          // Save button
-          GestureDetector(
-            onTap: _savePolicy,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(AppRadius.small),
-                border: Border.all(color: AppColors.accent),
-              ),
-              child: const Center(
-                child: Text(
-                  'Save',
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          
-          // Delete button (only for existing policies)
-          if (!isNew) ...[
-            const SizedBox(height: AppSpacing.sm),
-            GestureDetector(
-              onTap: _deletePolicy,
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                decoration: BoxDecoration(
-                  color: AppColors.danger.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(AppRadius.small),
-                  border: Border.all(color: AppColors.dangerBright),
-                ),
-                child: const Center(
-                  child: Text(
-                    'Delete',
-                    style: TextStyle(
-                      color: AppColors.dangerBright,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-          
-          const SizedBox(height: AppSpacing.sm),
-          // Cancel link
-          Center(
-            child: GestureDetector(
-              onTap: _cancelPolicyEdit,
-              child: const Text(
-                'Cancel',
-                style: TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  String _getVoiceDescription(String voice) {
-    switch (voice) {
-      case 'alloy': return 'Neutral, balanced';
-      case 'echo': return 'Warm, conversational';
-      case 'fable': return 'British, storyteller';
-      case 'onyx': return 'Deep, authoritative';
-      case 'nova': return 'Energetic, bright';
-      case 'shimmer': return 'Soft, gentle';
-      default: return '';
-    }
-  }
-  
-  Widget _buildSectionHeader(String title, IconData icon) {
-    return Row(
-      children: [
-        Icon(icon, color: AppColors.accent, size: 18),
-        const SizedBox(width: AppSpacing.sm),
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
     );
   }
 
   Widget _buildTextField({
-    required TextEditingController controller,
     required String label,
+    required TextEditingController controller,
     String? hint,
     int maxLines = 1,
-    TextCapitalization textCapitalization = TextCapitalization.none,
-    TextInputType? keyboardType,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2660,17 +1613,15 @@ class _ProfileSectionState extends State<_ProfileSection> {
         Text(
           label,
           style: const TextStyle(
-            color: AppColors.textSecondary,
+            color: AppColors.textMuted,
             fontSize: 12,
-            fontWeight: FontWeight.bold,
+            fontWeight: FontWeight.w500,
           ),
         ),
-        const SizedBox(height: AppSpacing.xs),
+        const SizedBox(height: 8),
         TextField(
           controller: controller,
           maxLines: maxLines,
-          textCapitalization: textCapitalization,
-          keyboardType: keyboardType,
           style: const TextStyle(color: AppColors.textPrimary),
           decoration: InputDecoration(
             hintText: hint,
@@ -2696,7 +1647,6 @@ class _ProfileSectionState extends State<_ProfileSection> {
     );
   }
 }
-
 /// AI Agents section - Reusable agent configurations
 class _AIAgentsSection extends StatefulWidget {
   final RosBridge rosBridge;
@@ -2710,24 +1660,44 @@ class _AIAgentsSection extends StatefulWidget {
 class _AIAgentsSectionState extends State<_AIAgentsSection> {
   List<AgentDefinition> _agents = [];
   int? _editingIndex; // null = list view, -1 = new agent, >= 0 = editing existing
-  
+  bool _isConnected = false;
+
   final _nameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _systemInstructionsController = TextEditingController();
   final _personalityController = TextEditingController();
-  final _voiceStyleController = TextEditingController();
-  final _knowledgeFocusController = TextEditingController();
-  
+  final _introMessageController = TextEditingController();
+  String _selectedFaceId = '';
+  String _selectedVoice = 'nova';
+  String _voiceMode = 'turn_taking'; // 'turn_taking' or 'realtime'
+  String _faceType = 'robot'; // 'robot' or 'animal'
+
+  // Available faces and voices
+  static const List<String> animalFaces = ['cat', 'dog', 'bear', 'bee', 'bird', 'crocodile', 'elephant', 'fish', 'lion', 'lobster', 'reptile', 'tiger'];
+  // TTS-1 voices (turn-taking mode)
+  static const List<String> turnTakingVoices = ['alloy', 'echo', 'fable', 'nova', 'onyx', 'shimmer'];
+  // Realtime API voices
+  static const List<String> realtimeVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse'];
+
+  // Get voice options based on current voice mode
+  List<String> get voiceOptions => _voiceMode == 'realtime' ? realtimeVoices : turnTakingVoices;
+
   // Multi-listener reference
   late final void Function(List<AgentDefinition>) _agentListener;
 
   @override
   void initState() {
     super.initState();
+    _isConnected = widget.rosBridge.isConnected;
+    widget.rosBridge.onConnectionChange = _onConnectionChange;
     _setupAgentListener();
     widget.rosBridge.requestAgents();
   }
-  
+
+  void _onConnectionChange(bool connected) {
+    if (mounted) {
+      setState(() => _isConnected = connected);
+    }
+  }
+
   void _setupAgentListener() {
     _agentListener = (agents) {
       if (mounted) {
@@ -2747,32 +1717,30 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
   void dispose() {
     widget.rosBridge.removeAgentListener(_agentListener);
     _nameController.dispose();
-    _descriptionController.dispose();
-    _systemInstructionsController.dispose();
     _personalityController.dispose();
-    _voiceStyleController.dispose();
-    _knowledgeFocusController.dispose();
+    _introMessageController.dispose();
     super.dispose();
   }
-  
+
   void _startNewAgent() {
     _nameController.clear();
-    _descriptionController.clear();
-    _systemInstructionsController.clear();
     _personalityController.clear();
-    _voiceStyleController.clear();
-    _knowledgeFocusController.clear();
+    _introMessageController.clear();
+    _selectedFaceId = 'cat';
+    _selectedVoice = 'nova';
+    _voiceMode = 'turn_taking';
     setState(() => _editingIndex = -1);
   }
-  
+
   void _editAgent(int index) {
     final agent = _agents[index];
     _nameController.text = agent.name;
-    _descriptionController.text = agent.description;
-    _systemInstructionsController.text = agent.systemInstructions;
     _personalityController.text = agent.personality;
-    _voiceStyleController.text = agent.voiceStyle;
-    _knowledgeFocusController.text = agent.knowledgeFocus;
+    _introMessageController.text = agent.introMessage;
+    _selectedFaceId = agent.faceId;
+    _faceType = animalFaces.contains(agent.faceId) ? 'animal' : 'robot';
+    _selectedVoice = agent.voice.isNotEmpty ? agent.voice : 'nova';
+    _voiceMode = agent.voiceMode;
     setState(() => _editingIndex = index);
   }
   
@@ -2790,11 +1758,11 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     
     final agent = AgentDefinition(
       name: name,
-      description: _descriptionController.text.trim(),
-      systemInstructions: _systemInstructionsController.text.trim(),
+      faceId: _selectedFaceId,
+      voice: _selectedVoice,
+      voiceMode: _voiceMode,
       personality: _personalityController.text.trim(),
-      voiceStyle: _voiceStyleController.text.trim(),
-      knowledgeFocus: _knowledgeFocusController.text.trim(),
+      introMessage: _introMessageController.text.trim(),
       isDefault: existingIsDefault,
     );
     
@@ -2806,11 +1774,18 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
   
   void _deleteAgent() {
     if (_editingIndex == null || _editingIndex! < 0) return;
-    
+
     final name = _agents[_editingIndex!].name;
+
+    // Protect default "Millie" agent from deletion
+    if (name == 'Millie') {
+      TopNotification.show(context, message: 'Cannot delete default agent "Millie"', backgroundColor: AppColors.danger);
+      return;
+    }
+
     widget.rosBridge.publishDeleteAgent(name);
     setState(() => _editingIndex = null);
-    
+
     TopNotification.show(context, message: 'Agent "$name" deleted', backgroundColor: AppColors.warning);
   }
   
@@ -2829,7 +1804,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
+          // Header with connection status
           Row(
             children: [
               const Icon(Icons.psychology, color: AppColors.accent, size: 24),
@@ -2842,35 +1817,52 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const Spacer(),
-              GestureDetector(
-                onTap: _startNewAgent,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(color: AppColors.accent),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.add, color: AppColors.accent, size: 18),
-                      SizedBox(width: AppSpacing.xs),
-                      Text(
-                        'New Agent',
-                        style: TextStyle(
-                          color: AppColors.accent,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
+              const SizedBox(width: AppSpacing.sm),
+              // Connection status indicator
+              Icon(
+                _isConnected ? Icons.cloud_done : Icons.cloud_off,
+                color: _isConnected ? AppColors.success : AppColors.textMuted,
+                size: 18,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                _isConnected ? 'Connected' : 'Offline',
+                style: TextStyle(
+                  color: _isConnected ? AppColors.success : AppColors.textMuted,
+                  fontSize: 12,
                 ),
               ),
+              const Spacer(),
+              // Only show New Agent button when connected
+              if (_isConnected)
+                GestureDetector(
+                  onTap: _startNewAgent,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md,
+                      vertical: AppSpacing.sm,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      border: Border.all(color: AppColors.accent),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add, color: AppColors.accent, size: 18),
+                        SizedBox(width: AppSpacing.xs),
+                        Text(
+                          'New Agent',
+                          style: TextStyle(
+                            color: AppColors.accent,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
           
@@ -2917,7 +1909,16 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
               ),
             )
           else
-            ..._agents.asMap().entries.map((entry) => _buildAgentCard(entry.key, entry.value)),
+            // Sort agents: active first, then by name
+            ...(() {
+              final sortedEntries = _agents.asMap().entries.toList()
+                ..sort((a, b) {
+                  if (a.value.isDefault && !b.value.isDefault) return -1;
+                  if (!a.value.isDefault && b.value.isDefault) return 1;
+                  return a.value.name.compareTo(b.value.name);
+                });
+              return sortedEntries.map((entry) => _buildAgentCard(entry.key, entry.value));
+            })(),
         ],
       ),
     );
@@ -2927,13 +1928,13 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     // Save the agent with isDefault = true
     final updatedAgent = agent.copyWith(isDefault: true);
     widget.rosBridge.publishSaveAgent(updatedAgent);
-    TopNotification.show(context, message: '${agent.name} is now default', backgroundColor: AppColors.success);
+    TopNotification.show(context, message: '${agent.name} is now active', backgroundColor: AppColors.success);
   }
 
   Widget _buildAgentCard(int index, AgentDefinition agent) {
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      margin: const EdgeInsets.only(bottom: AppSpacing.lg),
       padding: const EdgeInsets.all(AppSpacing.lg),
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -2943,111 +1944,140 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
           width: agent.isDefault ? 2 : 1,
         ),
       ),
-      child: Row(
+      child: Stack(
         children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: AppColors.accent.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(AppRadius.small),
-            ),
-            child: const Icon(Icons.psychology, color: AppColors.accent, size: 28),
-          ),
-          const SizedBox(width: AppSpacing.md),
-          Expanded(
-            flex: 1,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  agent.name,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                if (agent.description.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    agent.description,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 13,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const Spacer(),
-          // Default status badge or Set Default button
-          agent.isDefault
-              ? Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                  ),
-                  child: const Text(
-                    'Default',
-                    style: TextStyle(
-                      color: AppColors.success,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
-                )
-              : GestureDetector(
-                  onTap: () => _activateAgent(agent),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpacing.md,
-                      vertical: AppSpacing.sm,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.dangerBright.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(AppRadius.small),
-                      border: Border.all(color: AppColors.dangerBright),
-                    ),
-                    child: const Text(
-                      'Set Default',
-                      style: TextStyle(
-                        color: AppColors.dangerBright,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Face preview - larger like millie_mini
+              animalFaces.contains(agent.faceId)
+                  ? Container(
+                      width: 100,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                        child: Image.asset(
+                          'assets/faces/${agent.faceId}.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => _buildRobotFacePreview(100),
+                        ),
+                      ),
+                    )
+                  : _buildRobotFacePreview(100),
+              const SizedBox(width: AppSpacing.lg),
+              // Agent Info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      agent.name,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    Text(
+                      'Voice: ${agent.voice.isNotEmpty ? agent.voice[0].toUpperCase() + agent.voice.substring(1) : "Nova"}',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      'Mode: ${agent.voiceMode == "realtime" ? "Realtime" : "Turn-taking"}',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 100), // Space for buttons
+            ],
+          ),
+          // Buttons row - top right
+          Positioned(
+            top: 0,
+            right: 0,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Active/Activate button
+                agent.isDefault
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.md,
+                          vertical: AppSpacing.sm,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withOpacity(0.25),
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
+                        child: const Text(
+                          'Active',
+                          style: TextStyle(
+                            color: AppColors.success,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      )
+                    : GestureDetector(
+                        onTap: () => _activateAgent(agent),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.md,
+                            vertical: AppSpacing.sm,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning.withOpacity(0.25),
+                            borderRadius: BorderRadius.circular(AppRadius.small),
+                          ),
+                          child: const Text(
+                            'Activate',
+                            style: TextStyle(
+                              color: AppColors.warning,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ),
+                // Edit button (only when connected)
+                if (_isConnected) ...[
+                  const SizedBox(width: AppSpacing.sm),
+                  GestureDetector(
+                    onTap: () => _editAgent(index),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.md,
+                        vertical: AppSpacing.sm,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                        border: Border.all(color: AppColors.accent),
+                      ),
+                      child: const Text(
+                        'Edit',
+                        style: TextStyle(
+                          color: AppColors.accent,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
                   ),
-                ),
-          const SizedBox(width: AppSpacing.md),
-          // Edit button
-          GestureDetector(
-            onTap: () => _editAgent(index),
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: AppSpacing.sm,
-              ),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(AppRadius.small),
-                border: Border.all(color: AppColors.accent),
-              ),
-              child: const Text(
-                'Edit',
-                style: TextStyle(
-                  color: AppColors.accent,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
-              ),
+                ],
+              ],
             ),
           ),
         ],
@@ -3115,6 +2145,8 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildFaceSelector(),
+                const SizedBox(height: AppSpacing.lg),
                 _buildTextField(
                   controller: _nameController,
                   label: 'Agent Name',
@@ -3122,48 +2154,28 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
                   textCapitalization: TextCapitalization.words,
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _descriptionController,
-                  label: 'Description',
-                  hint: 'Brief description of what this agent does',
-                  maxLines: 2,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
+                _buildVoiceSelector(),
+                const SizedBox(height: AppSpacing.lg),
+                _buildVoiceModeDropdown(),
                 const SizedBox(height: AppSpacing.lg),
                 _buildTextField(
                   controller: _personalityController,
-                  label: 'Additional Personality & Tone',
-                  hint: 'Added on top of base personality from Profile',
+                  label: 'Personality & Tone',
+                  hint: 'Personality traits and speaking style',
+                  maxLines: 3,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(
+                  controller: _introMessageController,
+                  label: 'Intro Message',
+                  hint: 'Greeting when agent activates',
                   maxLines: 2,
                   textCapitalization: TextCapitalization.sentences,
                 ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _systemInstructionsController,
-                  label: 'Additional System Instructions',
-                  hint: 'Added on top of base instructions from Profile',
-                  maxLines: null,
-                  minLines: 4,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _knowledgeFocusController,
-                  label: 'Knowledge Focus',
-                  hint: 'What topics should this agent know about?',
-                  maxLines: 2,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _voiceStyleController,
-                  label: 'Voice Style (Optional)',
-                  hint: 'e.g., Upbeat, Calm, Energetic',
-                  textCapitalization: TextCapitalization.words,
-                ),
-                
+
                 const SizedBox(height: AppSpacing.xl),
-                
+
                 // Save button
                 GestureDetector(
                   onTap: _saveAgent,
@@ -3222,6 +2234,338 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     );
   }
 
+  Widget _buildVoiceModeDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Voice Mode',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(AppRadius.small),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _voiceMode,
+              isExpanded: true,
+              dropdownColor: AppColors.surface,
+              style: const TextStyle(color: AppColors.textPrimary),
+              items: const [
+                DropdownMenuItem(
+                  value: 'turn_taking',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Turn-Taking', style: TextStyle(color: AppColors.textPrimary)),
+                      Text(
+                        'Standard mode: Listen → Process → Respond',
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                DropdownMenuItem(
+                  value: 'realtime',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Realtime (Streaming)', style: TextStyle(color: AppColors.textPrimary)),
+                      Text(
+                        'Bidirectional streaming for natural conversation',
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    _voiceMode = value;
+                    // Switch to valid voice if current isn't available in new mode
+                    final newVoices = value == 'realtime' ? realtimeVoices : turnTakingVoices;
+                    if (!newVoices.contains(_selectedVoice)) {
+                      _selectedVoice = 'alloy'; // Available in both modes
+                    }
+                  });
+                }
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFaceSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Current face preview (large, centered)
+        Center(
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border, width: 2),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(AppRadius.medium - 1),
+              child: _faceType == 'animal' && _selectedFaceId.isNotEmpty
+                  ? Image.asset(
+                      'assets/faces/$_selectedFaceId.png',
+                      width: 120,
+                      height: 120,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _buildRobotFacePreview(120),
+                    )
+                  : _buildRobotFacePreview(120),
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        const Text(
+          'Face Type',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        // Face type toggle buttons
+        Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() {
+                  _faceType = 'robot';
+                  _selectedFaceId = '';
+                }),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                  decoration: BoxDecoration(
+                    color: _faceType == 'robot' ? AppColors.accent : AppColors.background,
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                    border: Border.all(
+                      color: _faceType == 'robot' ? AppColors.accent : AppColors.border,
+                    ),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Robot',
+                      style: TextStyle(
+                        color: _faceType == 'robot' ? Colors.white : AppColors.textSecondary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() {
+                  _faceType = 'animal';
+                  if (_selectedFaceId.isEmpty) _selectedFaceId = 'cat';
+                }),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                  decoration: BoxDecoration(
+                    color: _faceType == 'animal' ? AppColors.accent : AppColors.background,
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                    border: Border.all(
+                      color: _faceType == 'animal' ? AppColors.accent : AppColors.border,
+                    ),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Animal',
+                      style: TextStyle(
+                        color: _faceType == 'animal' ? Colors.white : AppColors.textSecondary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        // Animal faces grid (only shown when Animal is selected)
+        if (_faceType == 'animal') ...[
+          const SizedBox(height: AppSpacing.md),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              crossAxisSpacing: AppSpacing.sm,
+              mainAxisSpacing: AppSpacing.sm,
+            ),
+            itemCount: animalFaces.length,
+            itemBuilder: (context, index) {
+              final faceId = animalFaces[index];
+              final isSelected = _selectedFaceId == faceId;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedFaceId = faceId),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                    border: Border.all(
+                      color: isSelected ? AppColors.accent : AppColors.border,
+                      width: isSelected ? 2 : 1,
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(AppRadius.small - 1),
+                    child: Image.asset(
+                      'assets/faces/$faceId.png',
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Center(
+                        child: Text(faceId[0].toUpperCase(), style: const TextStyle(color: AppColors.textMuted)),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildVoiceSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Voice',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(AppRadius.small),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _selectedVoice,
+              isExpanded: true,
+              dropdownColor: AppColors.surface,
+              style: const TextStyle(color: AppColors.textPrimary),
+              items: voiceOptions.map((voice) => DropdownMenuItem(
+                value: voice,
+                child: Text(
+                  '${voice[0].toUpperCase()}${voice.substring(1)} - ${_getVoiceDescription(voice)}',
+                  style: const TextStyle(color: AppColors.textPrimary),
+                ),
+              )).toList(),
+              onChanged: (value) {
+                if (value != null) setState(() => _selectedVoice = value);
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getVoiceDescription(String voice) {
+    switch (voice) {
+      case 'alloy': return 'Neutral, balanced';
+      case 'ash': return 'Clear, direct';
+      case 'ballad': return 'Warm, melodic';
+      case 'coral': return 'Friendly, natural';
+      case 'echo': return 'Warm, conversational';
+      case 'fable': return 'British, storyteller';
+      case 'nova': return 'Energetic, bright';
+      case 'onyx': return 'Deep, authoritative';
+      case 'sage': return 'Calm, thoughtful';
+      case 'shimmer': return 'Soft, gentle';
+      case 'verse': return 'Rich, expressive';
+      default: return '';
+    }
+  }
+
+  /// Build robot face preview (like millie_mini)
+  Widget _buildRobotFacePreview(double size) {
+    final eyeWidth = size * 0.24;
+    final eyeHeight = size * 0.32;
+    final eyeGap = size * 0.08;
+    final mouthWidth = size * 0.32;
+    final mouthHeight = size * 0.04;
+
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(size * 0.08),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Eyes
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: eyeWidth,
+                height: eyeHeight,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(eyeWidth * 0.1),
+                ),
+              ),
+              SizedBox(width: eyeGap),
+              Container(
+                width: eyeWidth,
+                height: eyeHeight,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(eyeWidth * 0.1),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: size * 0.12),
+          // Mouth
+          Container(
+            width: mouthWidth,
+            height: mouthHeight,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(mouthHeight / 2),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
@@ -3229,6 +2573,7 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     int? maxLines = 1,
     int minLines = 1,
     TextCapitalization textCapitalization = TextCapitalization.none,
+    bool enabled = true,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3247,6 +2592,722 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
           maxLines: maxLines,
           minLines: minLines,
           textCapitalization: textCapitalization,
+          enabled: enabled,
+          style: TextStyle(color: enabled ? AppColors.textPrimary : AppColors.textMuted),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: TextStyle(color: AppColors.textMuted.withOpacity(0.5)),
+            filled: true,
+            fillColor: enabled ? AppColors.background : AppColors.surface,
+            contentPadding: const EdgeInsets.all(AppSpacing.md),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppRadius.small),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppRadius.small),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppRadius.small),
+              borderSide: const BorderSide(color: AppColors.accent, width: 2),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Memory section - View and edit robot memories
+class _MemorySection extends StatefulWidget {
+  final RosBridge rosBridge;
+
+  const _MemorySection({required this.rosBridge});
+
+  @override
+  State<_MemorySection> createState() => _MemorySectionState();
+}
+
+class _MemorySectionState extends State<_MemorySection> {
+  MemoryData _memories = MemoryData();
+  bool _isEditing = false;
+  String _editingType = ''; // 'owner_note', 'person', 'note'
+  int? _editingIndex;
+  bool _isConnected = false;
+
+  // Person editing controllers
+  final _personNameController = TextEditingController();
+  final _personRelationshipController = TextEditingController();
+  final _personInterestsController = TextEditingController();
+  final _personNotesController = TextEditingController();
+
+  // Note editing controller
+  final _noteContentController = TextEditingController();
+  String _noteCategory = 'general';
+
+  late final void Function(MemoryData) _memoryListener;
+
+  @override
+  void initState() {
+    super.initState();
+    _isConnected = widget.rosBridge.isConnected;
+    widget.rosBridge.onConnectionChange = _onConnectionChange;
+    _setupMemoryListener();
+    widget.rosBridge.requestMemories();
+  }
+
+  void _onConnectionChange(bool connected) {
+    if (mounted) {
+      setState(() => _isConnected = connected);
+    }
+  }
+
+  void _setupMemoryListener() {
+    _memoryListener = (memories) {
+      if (mounted) {
+        setState(() => _memories = memories);
+      }
+    };
+    widget.rosBridge.addMemoryListener(_memoryListener);
+  }
+
+  @override
+  void dispose() {
+    widget.rosBridge.removeMemoryListener(_memoryListener);
+    _personNameController.dispose();
+    _personRelationshipController.dispose();
+    _personInterestsController.dispose();
+    _personNotesController.dispose();
+    _noteContentController.dispose();
+    super.dispose();
+  }
+
+  void _addPerson() {
+    _personNameController.clear();
+    _personRelationshipController.clear();
+    _personInterestsController.clear();
+    _personNotesController.clear();
+    setState(() {
+      _isEditing = true;
+      _editingType = 'person';
+      _editingIndex = null;
+    });
+  }
+
+  void _editPerson(int index) {
+    final person = _memories.people[index];
+    _personNameController.text = person.name;
+    _personRelationshipController.text = person.relationship;
+    _personInterestsController.text = person.interests ?? '';
+    _personNotesController.text = person.notes.join(', ');
+    setState(() {
+      _isEditing = true;
+      _editingType = 'person';
+      _editingIndex = index;
+    });
+  }
+
+  void _savePerson() {
+    final name = _personNameController.text.trim();
+    if (name.isEmpty) {
+      TopNotification.show(context, message: 'Name is required', backgroundColor: AppColors.danger);
+      return;
+    }
+
+    final notes = _personNotesController.text
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    final person = KnownPerson(
+      name: name,
+      relationship: _personRelationshipController.text.trim(),
+      interests: _personInterestsController.text.trim().isEmpty ? null : _personInterestsController.text.trim(),
+      notes: notes,
+      lastSeen: DateTime.now(),
+    );
+
+    List<KnownPerson> updatedPeople;
+    if (_editingIndex != null) {
+      updatedPeople = List.from(_memories.people);
+      updatedPeople[_editingIndex!] = person;
+    } else {
+      updatedPeople = [..._memories.people, person];
+    }
+
+    final updatedMemories = _memories.copyWith(people: updatedPeople);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+
+    setState(() {
+      _isEditing = false;
+      _editingType = '';
+      _editingIndex = null;
+    });
+
+    TopNotification.show(context, message: 'Person saved', backgroundColor: AppColors.success);
+  }
+
+  void _deletePerson(int index) {
+    final updatedPeople = List<KnownPerson>.from(_memories.people);
+    final name = updatedPeople[index].name;
+    updatedPeople.removeAt(index);
+
+    final updatedMemories = _memories.copyWith(people: updatedPeople);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+
+    TopNotification.show(context, message: '$name removed', backgroundColor: AppColors.warning);
+  }
+
+  void _addNote() {
+    _noteContentController.clear();
+    _noteCategory = 'general';
+    setState(() {
+      _isEditing = true;
+      _editingType = 'note';
+      _editingIndex = null;
+    });
+  }
+
+  void _saveNote() {
+    final content = _noteContentController.text.trim();
+    if (content.isEmpty) {
+      TopNotification.show(context, message: 'Note content is required', backgroundColor: AppColors.danger);
+      return;
+    }
+
+    final note = MemoryNote(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      content: content,
+      category: _noteCategory,
+    );
+
+    final updatedNotes = [..._memories.notes, note];
+    final updatedMemories = _memories.copyWith(notes: updatedNotes);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+
+    setState(() {
+      _isEditing = false;
+      _editingType = '';
+    });
+
+    TopNotification.show(context, message: 'Note added', backgroundColor: AppColors.success);
+  }
+
+  void _deleteNote(int index) {
+    final updatedNotes = List<MemoryNote>.from(_memories.notes);
+    updatedNotes.removeAt(index);
+
+    final updatedMemories = _memories.copyWith(notes: updatedNotes);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+
+    TopNotification.show(context, message: 'Note deleted', backgroundColor: AppColors.warning);
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _isEditing = false;
+      _editingType = '';
+      _editingIndex = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isEditing) {
+      return _buildEditView();
+    }
+    return _buildListView();
+  }
+
+  Widget _buildListView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header with connection status
+          Row(
+            children: [
+              const Icon(Icons.memory, color: AppColors.accent, size: 24),
+              const SizedBox(width: AppSpacing.sm),
+              const Text(
+                'Robot Memory',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              // Connection status indicator
+              Icon(
+                _isConnected ? Icons.cloud_done : Icons.cloud_off,
+                color: _isConnected ? AppColors.success : AppColors.textMuted,
+                size: 18,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                _isConnected ? 'Connected' : 'Offline',
+                style: TextStyle(
+                  color: _isConnected ? AppColors.success : AppColors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          const Text(
+            'What the robot knows and remembers. The AI can update this during conversations.',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+          ),
+
+          const SizedBox(height: AppSpacing.xl),
+
+          // Owner Notes Section (Add button only when connected)
+          _buildSectionHeader('Owner Notes', Icons.person, onAdd: _isConnected ? _addOwnerNote : null),
+          const SizedBox(height: AppSpacing.md),
+          if (_memories.owner.notes.isEmpty)
+            _buildEmptyState('No owner notes yet', 'Things the robot learns about you')
+          else
+            ..._memories.owner.notes.asMap().entries.map((e) => _buildOwnerNoteCard(e.key, e.value)),
+
+          const SizedBox(height: AppSpacing.xl),
+
+          // People Section (Add button only when connected)
+          _buildSectionHeader('People', Icons.people, onAdd: _isConnected ? _addPerson : null),
+          const SizedBox(height: AppSpacing.md),
+          if (_memories.people.isEmpty)
+            _buildEmptyState('No people remembered yet', 'The robot will learn names as it meets people')
+          else
+            ..._memories.people.asMap().entries.map((e) => _buildPersonCard(e.key, e.value)),
+
+          const SizedBox(height: AppSpacing.xl),
+
+          // Notes Section (Add button only when connected)
+          _buildSectionHeader('Notes', Icons.note, onAdd: _isConnected ? _addNote : null),
+          const SizedBox(height: AppSpacing.md),
+          if (_memories.notes.isEmpty)
+            _buildEmptyState('No notes yet', 'The robot will save observations and facts here')
+          else
+            ..._memories.notes.asMap().entries.map((e) => _buildNoteCard(e.key, e.value)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title, IconData icon, {VoidCallback? onAdd, String addLabel = 'Add'}) {
+    return Row(
+      children: [
+        Icon(icon, color: AppColors.textSecondary, size: 18),
+        const SizedBox(width: AppSpacing.sm),
+        Text(
+          title,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const Spacer(),
+        if (onAdd != null)
+          GestureDetector(
+            onTap: onAdd,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+              decoration: BoxDecoration(
+                color: AppColors.accent.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(AppRadius.small),
+                border: Border.all(color: AppColors.accent),
+              ),
+              child: Text(
+                addLabel,
+                style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(String title, String subtitle) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          Text(title, style: const TextStyle(color: AppColors.textMuted)),
+          const SizedBox(height: AppSpacing.xs),
+          Text(subtitle, style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOwnerNoteCard(int index, String content) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.small),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              content,
+              style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
+            ),
+          ),
+          // Only show delete button when connected
+          if (_isConnected)
+            GestureDetector(
+              onTap: () => _deleteOwnerNote(index),
+              child: const Icon(Icons.close, color: AppColors.textMuted, size: 18),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _addOwnerNote() {
+    _noteContentController.clear();
+    setState(() {
+      _isEditing = true;
+      _editingType = 'owner_note';
+    });
+  }
+
+  void _saveOwnerNote() {
+    final content = _noteContentController.text.trim();
+    if (content.isEmpty) return;
+
+    final updatedNotes = [..._memories.owner.notes, content];
+    final updatedOwner = _memories.owner.copyWith(notes: updatedNotes);
+    final updatedMemories = _memories.copyWith(owner: updatedOwner);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+
+    _noteContentController.clear();
+    setState(() {
+      _isEditing = false;
+      _editingType = '';
+    });
+  }
+
+  void _deleteOwnerNote(int index) {
+    final updatedNotes = List<String>.from(_memories.owner.notes);
+    updatedNotes.removeAt(index);
+    final updatedOwner = _memories.owner.copyWith(notes: updatedNotes);
+    final updatedMemories = _memories.copyWith(owner: updatedOwner);
+    widget.rosBridge.publishSaveMemories(updatedMemories);
+  }
+
+  Widget _buildPersonCard(int index, KnownPerson person) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      person.name,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (person.relationship.isNotEmpty) ...[
+                      const SizedBox(width: AppSpacing.sm),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.accent.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
+                        child: Text(
+                          person.relationship,
+                          style: const TextStyle(color: AppColors.accent, fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (person.notes.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    person.notes.join('; '),
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          // Only show edit/delete buttons when connected
+          if (_isConnected) ...[
+            GestureDetector(
+              onTap: () => _editPerson(index),
+              child: const Padding(
+                padding: EdgeInsets.all(AppSpacing.sm),
+                child: Icon(Icons.edit, color: AppColors.textMuted, size: 18),
+              ),
+            ),
+            GestureDetector(
+              onTap: () => _deletePerson(index),
+              child: const Padding(
+                padding: EdgeInsets.all(AppSpacing.sm),
+                child: Icon(Icons.delete, color: AppColors.danger, size: 18),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoteCard(int index, MemoryNote note) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  note.content,
+                  style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  '${note.category} • ${_formatDate(note.createdAt)}',
+                  style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          // Only show delete button when connected
+          if (_isConnected)
+            GestureDetector(
+              onTap: () => _deleteNote(index),
+              child: const Padding(
+                padding: EdgeInsets.all(AppSpacing.sm),
+                child: Icon(Icons.delete, color: AppColors.danger, size: 18),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inDays == 0) return 'Today';
+    if (diff.inDays == 1) return 'Yesterday';
+    if (diff.inDays < 7) return '${diff.inDays} days ago';
+    return '${date.month}/${date.day}/${date.year}';
+  }
+
+  Widget _buildEditView() {
+    switch (_editingType) {
+      case 'owner_note':
+        return _buildOwnerNoteEditView();
+      case 'person':
+        return _buildPersonEditView();
+      case 'note':
+        return _buildNoteEditView();
+      default:
+        return const SizedBox();
+    }
+  }
+
+  Widget _buildOwnerNoteEditView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildEditHeader('Add Owner Note'),
+          const SizedBox(height: AppSpacing.lg),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              children: [
+                _buildTextField(_noteContentController, 'Note', 'Something about you to remember...', maxLines: 3),
+                const SizedBox(height: AppSpacing.xl),
+                _buildSaveButton(_saveOwnerNote),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPersonEditView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildEditHeader(_editingIndex != null ? 'Edit Person' : 'Add Person'),
+          const SizedBox(height: AppSpacing.lg),
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              children: [
+                _buildTextField(_personNameController, 'Name', 'Person\'s name'),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(_personRelationshipController, 'Relationship', 'e.g., friend, coworker, family'),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(_personInterestsController, 'Interests', 'What they like'),
+                const SizedBox(height: AppSpacing.lg),
+                _buildTextField(_personNotesController, 'Notes', 'Comma-separated things to remember'),
+                const SizedBox(height: AppSpacing.xl),
+                _buildSaveButton(_savePerson),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoteEditView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildEditHeader('Add Note'),
+          const SizedBox(height: AppSpacing.lg),
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildTextField(_noteContentController, 'Note', 'What to remember', maxLines: 3),
+                const SizedBox(height: AppSpacing.lg),
+                const Text('Category', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: AppSpacing.xs),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _noteCategory,
+                      isExpanded: true,
+                      dropdownColor: AppColors.surface,
+                      style: const TextStyle(color: AppColors.textPrimary),
+                      items: const [
+                        DropdownMenuItem(value: 'general', child: Text('General')),
+                        DropdownMenuItem(value: 'observation', child: Text('Observation')),
+                        DropdownMenuItem(value: 'preference', child: Text('Preference')),
+                        DropdownMenuItem(value: 'fact', child: Text('Fact')),
+                        DropdownMenuItem(value: 'event', child: Text('Event')),
+                      ],
+                      onChanged: (v) => setState(() => _noteCategory = v ?? 'general'),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.xl),
+                _buildSaveButton(_saveNote),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEditHeader(String title) {
+    return Row(
+      children: [
+        const Icon(Icons.memory, color: AppColors.accent, size: 24),
+        const SizedBox(width: AppSpacing.sm),
+        Text(
+          title,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const Spacer(),
+        GestureDetector(
+          onTap: _cancelEdit,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            decoration: BoxDecoration(
+              color: AppColors.danger.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(AppRadius.small),
+              border: Border.all(color: AppColors.dangerBright),
+            ),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.dangerBright, fontWeight: FontWeight.bold)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, String hint, {int maxLines = 1}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+        const SizedBox(height: AppSpacing.xs),
+        TextField(
+          controller: controller,
+          maxLines: maxLines,
           style: const TextStyle(color: AppColors.textPrimary),
           decoration: InputDecoration(
             hintText: hint,
@@ -3269,6 +3330,24 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildSaveButton(VoidCallback onSave) {
+    return GestureDetector(
+      onTap: onSave,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+        decoration: BoxDecoration(
+          color: AppColors.accent.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(AppRadius.small),
+          border: Border.all(color: AppColors.accent),
+        ),
+        child: const Center(
+          child: Text('Save', style: TextStyle(color: AppColors.accent, fontSize: 16, fontWeight: FontWeight.bold)),
+        ),
+      ),
     );
   }
 }
@@ -3626,35 +3705,91 @@ class _WaypointRow extends StatelessWidget {
 }
 
 class _QuickButtonPreview extends StatelessWidget {
-  final int index;
+  final ButtonConfig config;
   final VoidCallback onEdit;
 
-  const _QuickButtonPreview({required this.index, required this.onEdit});
+  const _QuickButtonPreview({required this.config, required this.onEdit});
+
+  IconData _getIcon() {
+    switch (config.actionType) {
+      case 'waypoint':
+        return Icons.location_on;
+      case 'task':
+        return Icons.playlist_play;
+      case 'none':
+      default:
+        return Icons.add;
+    }
+  }
+
+  String _getLabel() {
+    switch (config.actionType) {
+      case 'waypoint':
+      case 'task':
+        return config.value ?? '';
+      case 'none':
+      default:
+        return '';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final isConfigured = config.actionType != 'none';
+    final label = _getLabel();
+
     return GestureDetector(
       onTap: onEdit,
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: AppColors.background,
           borderRadius: BorderRadius.circular(AppRadius.medium),
           border: Border.all(color: AppColors.border),
         ),
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${index + 1}',
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 18),
-              ),
-              const Text(
-                'Tap to edit',
-                style: TextStyle(color: AppColors.textMuted, fontSize: 9),
-              ),
-            ],
-          ),
+          child: isConfigured
+              ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      _getIcon(),
+                      color: AppColors.textSecondary,
+                      size: 24,
+                    ),
+                    if (label.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ],
+                  ],
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.add,
+                      color: AppColors.textMuted.withOpacity(0.5),
+                      size: 24,
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Tap to edit',
+                      style: TextStyle(color: AppColors.textMuted, fontSize: 9),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
@@ -3664,16 +3799,69 @@ class _QuickButtonPreview extends StatelessWidget {
 /// Edit button dialog
 class _EditButtonDialog extends StatefulWidget {
   final int buttonIndex;
-  
-  const _EditButtonDialog({required this.buttonIndex});
+  final RosBridge rosBridge;
+
+  const _EditButtonDialog({required this.buttonIndex, required this.rosBridge});
 
   @override
   State<_EditButtonDialog> createState() => _EditButtonDialogState();
 }
 
 class _EditButtonDialogState extends State<_EditButtonDialog> {
-  String _actionType = 'waypoint';
-  String? _selectedWaypoint;
+  String _actionType = 'none';
+  String? _selectedValue;
+  List<Waypoint> _waypoints = [];
+  List<SavedSequence> _sequences = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Load waypoints and sequences from rosBridge
+    _waypoints = widget.rosBridge.waypoints;
+    _sequences = widget.rosBridge.sequences;
+
+    // Listen for updates
+    widget.rosBridge.addWaypointListener(_onWaypointsUpdate);
+    widget.rosBridge.addSequenceListener(_onSequencesUpdate);
+
+    // Load saved config for this button
+    _loadConfig();
+  }
+
+  Future<void> _loadConfig() async {
+    final config = await ButtonConfigService.getConfig(widget.buttonIndex);
+    if (mounted) {
+      setState(() {
+        _actionType = config.actionType;
+        _selectedValue = config.value;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _saveConfig() async {
+    final config = ButtonConfig(
+      actionType: _actionType,
+      value: _selectedValue,
+    );
+    await ButtonConfigService.saveConfig(widget.buttonIndex, config);
+  }
+
+  @override
+  void dispose() {
+    widget.rosBridge.removeWaypointListener(_onWaypointsUpdate);
+    widget.rosBridge.removeSequenceListener(_onSequencesUpdate);
+    super.dispose();
+  }
+
+  void _onWaypointsUpdate(List<Waypoint> waypoints) {
+    if (mounted) setState(() => _waypoints = waypoints);
+  }
+
+  void _onSequencesUpdate(List<SavedSequence> sequences) {
+    if (mounted) setState(() => _sequences = sequences);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3688,60 +3876,78 @@ class _EditButtonDialogState extends State<_EditButtonDialog> {
       ),
       content: SizedBox(
         width: 300,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Action Type:', style: TextStyle(color: AppColors.textSecondary)),
-            const SizedBox(height: AppSpacing.sm),
-            
-            // Action type selector
-            Wrap(
-              spacing: AppSpacing.sm,
-              children: [
-                _ActionChip(
-                  label: 'Waypoint',
-                  isSelected: _actionType == 'waypoint',
-                  onSelected: () => setState(() => _actionType = 'waypoint'),
-                ),
-                _ActionChip(
-                  label: 'Workflow',
-                  isSelected: _actionType == 'workflow',
-                  onSelected: () => setState(() => _actionType = 'workflow'),
-                ),
-              ],
-            ),
-            
-            const SizedBox(height: AppSpacing.lg),
-            
-            if (_actionType == 'waypoint') ...[
-              const Text('Select Waypoint:', style: TextStyle(color: AppColors.textSecondary)),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Action Type:', style: TextStyle(color: AppColors.textSecondary)),
               const SizedBox(height: AppSpacing.sm),
-              // Demo waypoint list
-              _WaypointOption(
-                name: 'Home',
-                isSelected: _selectedWaypoint == 'Home',
-                onSelected: () => setState(() => _selectedWaypoint = 'Home'),
+
+              // Action type selector
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
+                children: [
+                  _ActionChip(
+                    label: 'None',
+                    isSelected: _actionType == 'none',
+                    onSelected: () => setState(() {
+                      _actionType = 'none';
+                      _selectedValue = null;
+                    }),
+                  ),
+                  _ActionChip(
+                    label: 'Waypoint',
+                    isSelected: _actionType == 'waypoint',
+                    onSelected: () => setState(() {
+                      _actionType = 'waypoint';
+                      _selectedValue = null;
+                    }),
+                  ),
+                  _ActionChip(
+                    label: 'Task',
+                    isSelected: _actionType == 'task',
+                    onSelected: () => setState(() {
+                      _actionType = 'task';
+                      _selectedValue = null;
+                    }),
+                  ),
+                ],
               ),
-              _WaypointOption(
-                name: 'Kitchen',
-                isSelected: _selectedWaypoint == 'Kitchen',
-                onSelected: () => setState(() => _selectedWaypoint = 'Kitchen'),
-              ),
-              _WaypointOption(
-                name: 'Office',
-                isSelected: _selectedWaypoint == 'Office',
-                onSelected: () => setState(() => _selectedWaypoint = 'Office'),
-              ),
+
+              const SizedBox(height: AppSpacing.lg),
+
+              // Waypoint selection
+              if (_actionType == 'waypoint') ...[
+                const Text('Select Waypoint:', style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: AppSpacing.sm),
+                if (_waypoints.isEmpty)
+                  const Text('No waypoints saved yet.', style: TextStyle(color: AppColors.textMuted, fontSize: 12))
+                else
+                  ..._waypoints.map((wp) => _WaypointOption(
+                    name: wp.name,
+                    isSelected: _selectedValue == wp.name,
+                    onSelected: () => setState(() => _selectedValue = wp.name),
+                  )),
+              ],
+
+              // Task/Sequence selection
+              if (_actionType == 'task') ...[
+                const Text('Select Task:', style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: AppSpacing.sm),
+                if (_sequences.isEmpty)
+                  const Text('No tasks saved yet.', style: TextStyle(color: AppColors.textMuted, fontSize: 12))
+                else
+                  ..._sequences.map((seq) => _WaypointOption(
+                    name: seq.name,
+                    isSelected: _selectedValue == seq.name,
+                    onSelected: () => setState(() => _selectedValue = seq.name),
+                  )),
+              ],
+
             ],
-            
-            if (_actionType == 'workflow') ...[
-              const Text(
-                'Create multi-step workflows in the Workflows section.',
-                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-              ),
-            ],
-          ],
+          ),
         ),
       ),
       actions: [
@@ -3751,9 +3957,10 @@ class _EditButtonDialogState extends State<_EditButtonDialog> {
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-          onPressed: () {
-            debugPrint("Saved button ${widget.buttonIndex + 1}: $_actionType -> $_selectedWaypoint");
-            Navigator.pop(context);
+          onPressed: () async {
+            await _saveConfig();
+            debugPrint("Saved button ${widget.buttonIndex + 1}: $_actionType -> $_selectedValue");
+            if (context.mounted) Navigator.pop(context);
           },
           child: const Text('Save', style: TextStyle(color: Colors.white)),
         ),

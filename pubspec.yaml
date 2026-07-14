@@ -33,6 +33,12 @@ dependencies:
   # Audio recording for STT
   record: ^6.0.0
 
+  # Continuous PCM audio streaming
+  flutter_sound: ^9.16.3
+
+  # Local storage
+  shared_preferences: ^2.3.5
+
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
@@ -47,3 +53,4 @@ flutter:
     - assets/.env
     - assets/millie_android.ppn
     - assets/icon/
+    - assets/faces/

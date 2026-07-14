@@ -15,6 +15,7 @@ class AppColors {
   static const Color danger = Color(0xFFAA4400);      // Orange-red
   static const Color dangerBright = Color(0xFFFF6600);
   static const Color success = Color(0xFF00AA44);     // Green
+  static const Color successBright = Color(0xFF00DD55); // Bright green
   static const Color warning = Color(0xFFFFAA00);     // Yellow-orange
   
   // Text colors
