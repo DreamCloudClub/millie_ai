@@ -85,10 +85,17 @@ class _AlertEditPageState extends State<AlertEditPage> {
   }
 
   Future<void> _selectDate() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // Allow selecting the existing date even if it's in the past
+    final earliest = (_selectedDate != null && _selectedDate!.isBefore(today))
+        ? _selectedDate!
+        : today;
+
     final picked = await showDatePicker(
       context: context,
-      initialDate: _selectedDate ?? DateTime.now(),
-      firstDate: DateTime.now(),
+      initialDate: _selectedDate ?? today,
+      firstDate: earliest,
       lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
       builder: (context, child) {
         return Theme(

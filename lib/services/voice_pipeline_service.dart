@@ -242,6 +242,9 @@ class VoicePipelineService {
     required String alertContext,
     String voice = 'alloy',
   }) async {
+    debugPrint('🔔 [VoicePipeline] deliverAlertAndListen called');
+    debugPrint('🔔 [VoicePipeline] API key set: ${VoicePipelineService.apiKey != null}');
+
     _voice = voice;
     _conversationHistory.clear();
     _isPaused = false;
@@ -264,7 +267,9 @@ class VoicePipelineService {
     _conversationHistory.add({'role': 'assistant', 'content': alertMessage});
 
     // Speak the alert
+    debugPrint('🔔 [VoicePipeline] About to speak alert text');
     await _speakText(alertMessage);
+    debugPrint('🔔 [VoicePipeline] Finished speaking alert');
 
     // Start listening for user response
     await startListening();
@@ -798,14 +803,21 @@ class VoicePipelineService {
 
   /// Text to Speech and play (like millie_mini pattern)
   Future<void> _speakText(String text) async {
-    if (text.isEmpty) return;
+    debugPrint('🔊 TTS: _speakText called with ${text.length} chars');
+    if (text.isEmpty) {
+      debugPrint('🔊 TTS: Aborted - empty text');
+      return;
+    }
     if (_stopped) {
       debugPrint('🔊 TTS: Aborted - conversation stopped');
       return;
     }
 
     final apiKey = VoicePipelineService.apiKey;
-    if (apiKey == null || apiKey.isEmpty) return;
+    if (apiKey == null || apiKey.isEmpty) {
+      debugPrint('🔊 TTS: Aborted - API key not set');
+      return;
+    }
 
     onStateChange?.call(VoiceState.speaking);
     onSpeaking?.call(true);

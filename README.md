@@ -32,7 +32,13 @@ Millie AI transforms a tablet into the robot's face and voice. When mounted on t
 
 ## Screenshots
 
-*Coming soon — face display, control overlay, animal faces*
+| Face | Controls | Dashboard |
+|------|----------|-----------|
+| ![Face](screenshots/face.png) | ![Controls](screenshots/controls.png) | ![Dashboard](screenshots/dashboard.png) |
+
+| Identity | Settings |
+|----------|----------|
+| ![Identity](screenshots/identity.png) | ![Settings](screenshots/settings.png) |
 
 ## Features
 
