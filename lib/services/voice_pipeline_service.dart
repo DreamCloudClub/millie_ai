@@ -2,13 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:record/record.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'workflow_tools.dart';
 import 'memory_tools.dart';
+import 'notes_tools.dart';
 
 /// Voice states for UI feedback
 enum VoiceState {
@@ -38,6 +38,19 @@ class LLMResponse {
 class VoicePipelineService {
   final AudioRecorder _recorder = AudioRecorder();
   final AudioPlayer _player = AudioPlayer();
+
+  // Cached API key (set from conversation service via robot)
+  static String? _cachedApiKey;
+
+  /// Set the API key to use (called from conversation service when received from robot)
+  static void setApiKey(String key) {
+    _cachedApiKey = key;
+    final prefix = key.length > 15 ? '${key.substring(0, 7)}...${key.substring(key.length - 4)}' : '***';
+    debugPrint('🔑 [VoicePipeline] API key set: $prefix');
+  }
+
+  /// Get the API key (from robot via rosbridge)
+  static String? get apiKey => _cachedApiKey;
   
   // State
   bool _isRecording = false;
@@ -61,7 +74,7 @@ class VoicePipelineService {
   // Idle timeout - pause if no user speech for this long
   Timer? _idleTimer;
   DateTime? _lastUserSpeechTime;
-  static const int _idleTimeoutSeconds = 60;
+  int _idleTimeoutSeconds = 60;
 
   static const Duration _silenceThreshold = Duration(milliseconds: 1500);  // Stop after 1.5s silence
   static const Duration _maxRecordingDuration = Duration(seconds: 30);     // Max recording time
@@ -78,6 +91,7 @@ class VoicePipelineService {
   // Tool handlers
   WorkflowTools? workflowToolsHandler;
   MemoryTools? memoryToolsHandler;
+  NotesTools? notesToolsHandler;
   
   // Callbacks
   void Function(VoiceState state)? onStateChange;
@@ -87,13 +101,73 @@ class VoicePipelineService {
   void Function(bool speaking)? onSpeaking;
   void Function()? onConversationComplete;       // Called when conversation ends
   void Function()? onPauseRequested;             // Called when user says "pause"
-  
+
+  // Token usage tracking for activity graph (per-response, not time-based)
+  static const int _tokenHistoryLength = 20; // Last 20 API responses
+  final List<int> _tokenHistory = List.filled(_tokenHistoryLength, 0);
+  int _lastResponseTokens = 0;
+  int _sessionTotalTokens = 0;
+  final StreamController<List<int>> _tokenHistoryController = StreamController<List<int>>.broadcast();
+
+  /// Stream of token history for UI graph (emits on each response)
+  Stream<List<int>> get tokenHistoryStream => _tokenHistoryController.stream;
+
+  /// Current token history snapshot
+  List<int> get tokenHistory => List.unmodifiable(_tokenHistory);
+
+  /// Total tokens used this session
+  int get sessionTotalTokens => _sessionTotalTokens;
+
+  /// Tokens from the last API response
+  int get lastResponseTokens => _lastResponseTokens;
+
+  /// Start token tracking (just ensures stream is ready)
+  void startTokenTracking() {
+    debugPrint('📊 [TokenTracking] Token tracking ready');
+  }
+
+  /// Stop token tracking
+  void stopTokenTracking() {
+    // Nothing to stop - no timer
+  }
+
+  /// Reset token tracking for new session
+  void resetTokenTracking() {
+    _tokenHistory.fillRange(0, _tokenHistoryLength, 0);
+    _lastResponseTokens = 0;
+    _sessionTotalTokens = 0;
+    _tokenHistoryController.add(List.from(_tokenHistory));
+  }
+
+  /// Record tokens from an API response
+  void _recordTokens(int tokens) {
+    // Shift history left, add new response to right
+    for (int i = 0; i < _tokenHistoryLength - 1; i++) {
+      _tokenHistory[i] = _tokenHistory[i + 1];
+    }
+    _tokenHistory[_tokenHistoryLength - 1] = tokens;
+
+    _lastResponseTokens = tokens;
+    _sessionTotalTokens += tokens;
+
+    debugPrint('📊 [TokenTracking] Recorded $tokens tokens (session total: $_sessionTotalTokens)');
+
+    // Notify listeners immediately
+    _tokenHistoryController.add(List.from(_tokenHistory));
+  }
+
   VoicePipelineService();
   
   bool get isRecording => _isRecording;
   bool get isPlaying => _isPlaying;
   bool get isPaused => _isPaused;
   bool get isContinuousMode => _isContinuousMode;
+
+  /// Set the idle timeout (in seconds) before conversation pauses
+  void setIdleTimeout(int seconds) {
+    _idleTimeoutSeconds = seconds;
+    debugPrint('⏱️ [TurnTaking] Idle timeout set to ${seconds}s');
+  }
   
   /// Start a conversation with the given system prompt
   Future<void> startConversation({
@@ -113,16 +187,37 @@ class VoicePipelineService {
     _startIdleTimer();
 
     debugPrint('🎤 Starting conversation');
-    
-    // Speak greeting if provided
+
+    // Speak greeting if provided, otherwise let AI speak first
     if (greeting != null && greeting.isNotEmpty) {
       await _speakText(greeting);
       // Add greeting to history
       _conversationHistory.add({'role': 'assistant', 'content': greeting});
+    } else {
+      // No greeting - let AI generate the first message naturally
+      debugPrint('🤖 No greeting provided - AI will speak first');
+      await _generateAiFirstMessage();
     }
-    
+
     // Start listening
     await startListening();
+  }
+
+  /// Generate AI's first message when no greeting is provided
+  Future<void> _generateAiFirstMessage() async {
+    onStateChange?.call(VoiceState.processing);
+
+    try {
+      // Call LLM with empty user message to let AI speak first
+      final response = await _callLLM('');
+      final content = response?.content;
+      if (content != null && content.isNotEmpty && !_stopped) {
+        _conversationHistory.add({'role': 'assistant', 'content': content});
+        await _speakText(content);
+      }
+    } catch (e) {
+      debugPrint('❌ Error generating first message: $e');
+    }
   }
   
   /// Speak text only (no listening after) - for delivery mode
@@ -137,6 +232,42 @@ class VoicePipelineService {
 
     debugPrint('🔊 Speaking only (delivery mode): $text');
     await _speakText(text);
+  }
+
+  /// Deliver an alert message, then start listening for response
+  /// Used for reminder/alert delivery - speaks the alert, adds to conversation history,
+  /// then automatically starts listening so user can respond
+  Future<void> deliverAlertAndListen({
+    required String alertMessage,
+    required String alertContext,
+    String voice = 'alloy',
+  }) async {
+    _voice = voice;
+    _conversationHistory.clear();
+    _isPaused = false;
+    _isContinuousMode = true;
+    _shouldEndConversation = false;
+    _stopped = false;
+
+    // Start idle timer
+    _startIdleTimer();
+
+    debugPrint('🔔 Delivering alert: $alertMessage');
+
+    // Add system context about the alert
+    _conversationHistory.add({
+      'role': 'system',
+      'content': 'You just delivered an alert to the user: "$alertContext". The user may respond or ask follow-up questions about this reminder.',
+    });
+
+    // Add the alert as assistant message (what we spoke)
+    _conversationHistory.add({'role': 'assistant', 'content': alertMessage});
+
+    // Speak the alert
+    await _speakText(alertMessage);
+
+    // Start listening for user response
+    await startListening();
   }
 
   /// Listen once and return the transcription (for confirmation flows)
@@ -384,7 +515,7 @@ class VoicePipelineService {
       
       // Step 2: LLM with tools
       final response = await _callLLM(transcription);
-      
+
       if (response == null || (response.content == null && !response.hasToolCalls)) {
         onError?.call('Failed to get AI response');
         _isProcessing = false;
@@ -393,7 +524,12 @@ class VoicePipelineService {
         }
         return;
       }
-      
+
+      // Record token usage for activity graph
+      if (response.totalTokens > 0) {
+        _recordTokens(response.totalTokens);
+      }
+
       // Handle tool calls if any
       String? aiResponse = response.content;
       bool shouldEndAfterSpeaking = false;
@@ -446,8 +582,11 @@ class VoicePipelineService {
   
   /// Speech to Text via Whisper API
   Future<String?> _speechToText(String audioPath) async {
-    final apiKey = dotenv.env['OPENAI_API_KEY'];
-    if (apiKey == null) return null;
+    final apiKey = VoicePipelineService.apiKey;
+    if (apiKey == null || apiKey.isEmpty) {
+      debugPrint('❌ [VoicePipeline] STT failed - API key not set');
+      return null;
+    }
     
     try {
       final file = File(audioPath);
@@ -481,8 +620,11 @@ class VoicePipelineService {
   
   /// Call LLM with function calling support
   Future<LLMResponse?> _callLLM(String userMessage) async {
-    final apiKey = dotenv.env['OPENAI_API_KEY'];
-    if (apiKey == null) return null;
+    final apiKey = VoicePipelineService.apiKey;
+    if (apiKey == null || apiKey.isEmpty) {
+      debugPrint('❌ [VoicePipeline] LLM call failed - API key not set');
+      return null;
+    }
     
     try {
       // Build system prompt with context from handlers
@@ -510,6 +652,9 @@ class VoicePipelineService {
       }
       if (memoryToolsHandler != null) {
         allTools.addAll(MemoryTools.toolDefinitions);
+      }
+      if (notesToolsHandler != null) {
+        allTools.addAll(NotesTools.toolDefinitions);
       }
       
       // Add tools if any handlers are available
@@ -571,6 +716,10 @@ class VoicePipelineService {
 
     // Tool name sets for routing
     const memoryTools = {'add_owner_note', 'remember_person', 'add_memory_note', 'recall_memories', 'get_owner_info'};
+    const notesTools = {
+      'create_note', 'list_notes', 'search_notes', 'open_note', 'get_note', 'delete_note',
+      'create_alert', 'list_alerts', 'delete_alert', 'update_alert'
+    };
 
     // Execute each tool
     final toolResults = <Map<String, dynamic>>[];
@@ -580,6 +729,8 @@ class VoicePipelineService {
       // Route to appropriate handler
       if (memoryTools.contains(toolCall.name) && memoryToolsHandler != null) {
         result = await memoryToolsHandler!.executeTool(toolCall);
+      } else if (notesTools.contains(toolCall.name) && notesToolsHandler != null) {
+        result = await notesToolsHandler!.executeTool(toolCall);
       } else if (workflowToolsHandler != null) {
         result = await workflowToolsHandler!.executeTool(toolCall);
       } else {
@@ -595,8 +746,8 @@ class VoicePipelineService {
     }
     
     // Get follow-up response from LLM
-    final apiKey = dotenv.env['OPENAI_API_KEY'];
-    if (apiKey == null) return response.content;
+    final apiKey = VoicePipelineService.apiKey;
+    if (apiKey == null || apiKey.isEmpty) return response.content;
     
     try {
       String enhancedPrompt = _systemPrompt;
@@ -653,8 +804,8 @@ class VoicePipelineService {
       return;
     }
 
-    final apiKey = dotenv.env['OPENAI_API_KEY'];
-    if (apiKey == null) return;
+    final apiKey = VoicePipelineService.apiKey;
+    if (apiKey == null || apiKey.isEmpty) return;
 
     onStateChange?.call(VoiceState.speaking);
     onSpeaking?.call(true);
@@ -828,6 +979,21 @@ class VoicePipelineService {
       debugPrint('   → NOT starting listening (busy with processing/playing)');
     }
   }
+
+  /// Resume and have AI speak first (natural response based on context)
+  Future<void> resumeWithResponse() async {
+    debugPrint('▶️ resumeWithResponse() called');
+    _isPaused = false;
+    _isContinuousMode = true;
+    _stopped = false;
+
+    // Restart idle timer
+    _startIdleTimer();
+
+    // Have AI generate a response first, then start listening
+    await _generateAiFirstMessage();
+    await startListening();
+  }
   
   /// Stop the conversation completely
   Future<void> stopConversation() async {
@@ -864,6 +1030,8 @@ class VoicePipelineService {
   /// Clean up resources
   Future<void> dispose() async {
     await stopConversation();
+    stopTokenTracking();
+    await _tokenHistoryController.close();
     _recorder.dispose();
     _player.dispose();
   }

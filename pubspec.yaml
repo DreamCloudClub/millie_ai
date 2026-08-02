@@ -21,11 +21,9 @@ dependencies:
   # HTTP for robot API
   http: ^1.2.2
 
-  # Voice services (preserved for future STT/LLM/TTS)
+  # Voice services
   flutter_webrtc: ^1.2.1          # Realtime WebRTC (backup option)
-  porcupine_flutter: ^3.0.5       # Wake word detection
   just_audio: ^0.9.36             # Audio playback
-  flutter_dotenv: ^5.1.0          # Environment variables
   permission_handler: ^11.3.1     # Mic permissions
   path_provider: ^2.1.5           # File storage
   shelf: ^1.4.0                   # HTTP server
@@ -39,7 +37,11 @@ dependencies:
   # Local storage
   shared_preferences: ^2.3.5
 
+  # UUID generation
+  uuid: ^4.0.0
+
   cupertino_icons: ^1.0.8
+  font_awesome_flutter: ^11.0.0
 
 dev_dependencies:
   flutter_test:
@@ -50,7 +52,5 @@ flutter:
   uses-material-design: true
   
   assets:
-    - assets/.env
-    - assets/millie_android.ppn
     - assets/icon/
     - assets/faces/

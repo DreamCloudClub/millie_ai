@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
-import '../utils/rosbridge.dart';
 import 'workflow_tools.dart';
+import 'local_memory_service.dart';
 
 /// Memory Tools for AI function calling
 /// Allows the agent to remember and recall information about:
@@ -8,31 +8,9 @@ import 'workflow_tools.dart';
 /// - People it meets (name, relationship, notes)
 /// - General notes and observations
 class MemoryTools {
-  final RosBridge rosBridge;
+  final LocalMemoryService memoryService;
 
-  // Local cache from listener updates
-  MemoryData _memories = MemoryData();
-
-  // Listener reference for cleanup
-  late final void Function(MemoryData) _memoryListener;
-
-  MemoryTools(this.rosBridge) {
-    _setupListeners();
-  }
-
-  void _setupListeners() {
-    _memoryListener = (memories) {
-      _memories = memories;
-      debugPrint('🧠 [MemoryTools] Loaded: ${memories.owner.notes.length} owner notes, ${memories.people.length} people, ${memories.notes.length} notes');
-    };
-
-    rosBridge.addMemoryListener(_memoryListener);
-    rosBridge.requestMemories();
-  }
-
-  void dispose() {
-    rosBridge.removeMemoryListener(_memoryListener);
-  }
+  MemoryTools(this.memoryService);
 
   /// Clear any local state (called when conversation is cancelled/reset)
   void clear() {
@@ -184,7 +162,7 @@ class MemoryTools {
   // ADD OWNER NOTE
   // ===========================================================================
 
-  ToolResult _addOwnerNote(Map<String, dynamic> args) {
+  Future<ToolResult> _addOwnerNote(Map<String, dynamic> args) async {
     final note = args['note'] as String?;
     if (note == null || note.isEmpty) {
       return ToolResult(
@@ -193,14 +171,7 @@ class MemoryTools {
       );
     }
 
-    // Add to owner notes
-    final updatedNotes = [..._memories.owner.notes, note];
-    final updatedOwner = _memories.owner.copyWith(notes: updatedNotes);
-    final updatedMemories = _memories.copyWith(owner: updatedOwner);
-    _memories = updatedMemories;
-    rosBridge.publishSaveMemories(updatedMemories);
-
-    debugPrint('📝 [MemoryTools] Saved owner note: $note');
+    await memoryService.addOwnerNote(note);
 
     return ToolResult(
       success: true,
@@ -212,7 +183,7 @@ class MemoryTools {
   // REMEMBER A PERSON
   // ===========================================================================
 
-  ToolResult _rememberPerson(Map<String, dynamic> args) {
+  Future<ToolResult> _rememberPerson(Map<String, dynamic> args) async {
     final name = args['name'] as String?;
     if (name == null || name.isEmpty) {
       return ToolResult(
@@ -232,42 +203,14 @@ class MemoryTools {
       notes = [notesArg];
     }
 
-    // Check if person already exists
-    final existingIndex = _memories.people.indexWhere(
-      (p) => p.name.toLowerCase() == name.toLowerCase(),
+    final person = KnownPerson(
+      name: name,
+      relationship: relationship,
+      interests: interests,
+      notes: notes,
     );
 
-    KnownPerson person;
-    List<KnownPerson> updatedPeople;
-
-    if (existingIndex >= 0) {
-      // Update existing person
-      final existing = _memories.people[existingIndex];
-      person = existing.copyWith(
-        relationship: relationship.isNotEmpty ? relationship : existing.relationship,
-        interests: interests ?? existing.interests,
-        notes: [...existing.notes, ...notes],
-        lastSeen: DateTime.now(),
-      );
-      updatedPeople = List.from(_memories.people);
-      updatedPeople[existingIndex] = person;
-    } else {
-      // Add new person
-      person = KnownPerson(
-        name: name,
-        relationship: relationship,
-        interests: interests,
-        notes: notes,
-        lastSeen: DateTime.now(),
-      );
-      updatedPeople = [..._memories.people, person];
-    }
-
-    final updatedMemories = _memories.copyWith(people: updatedPeople);
-    _memories = updatedMemories;
-    rosBridge.publishSaveMemories(updatedMemories);
-
-    debugPrint('📝 [MemoryTools] Remembered person: $name (${relationship.isNotEmpty ? relationship : "no relationship specified"})');
+    await memoryService.rememberPerson(person);
 
     return ToolResult(
       success: true,
@@ -279,7 +222,7 @@ class MemoryTools {
   // ADD A NOTE
   // ===========================================================================
 
-  ToolResult _addMemoryNote(Map<String, dynamic> args) {
+  Future<ToolResult> _addMemoryNote(Map<String, dynamic> args) async {
     final content = args['content'] as String?;
     if (content == null || content.isEmpty) {
       return ToolResult(
@@ -296,12 +239,7 @@ class MemoryTools {
       category: category,
     );
 
-    final updatedNotes = [..._memories.notes, note];
-    final updatedMemories = _memories.copyWith(notes: updatedNotes);
-    _memories = updatedMemories;
-    rosBridge.publishSaveMemories(updatedMemories);
-
-    debugPrint('📝 [MemoryTools] Added note ($category): $content');
+    await memoryService.addNote(note);
 
     return ToolResult(
       success: true,
@@ -315,16 +253,17 @@ class MemoryTools {
 
   ToolResult _recallMemories(Map<String, dynamic> args) {
     final query = (args['query'] as String? ?? '').toLowerCase();
+    final memories = memoryService.memories;
 
     final buffer = StringBuffer();
 
     // If query is "owner" or empty, return owner notes
     if (query.isEmpty || query == 'owner') {
-      if (_memories.owner.isEmpty) {
+      if (memories.owner.isEmpty) {
         buffer.writeln('No owner notes saved yet.');
       } else {
         buffer.writeln('Owner notes:');
-        for (final note in _memories.owner.notes) {
+        for (final note in memories.owner.notes) {
           buffer.writeln('  - $note');
         }
       }
@@ -332,7 +271,7 @@ class MemoryTools {
 
     // Search people
     if (query.isNotEmpty && query != 'owner') {
-      final matchingPeople = _memories.people.where(
+      final matchingPeople = memories.people.where(
         (p) => p.name.toLowerCase().contains(query) ||
                p.relationship.toLowerCase().contains(query),
       ).toList();
@@ -352,10 +291,7 @@ class MemoryTools {
 
     // Search notes
     if (query.isNotEmpty) {
-      final matchingNotes = _memories.notes.where(
-        (n) => n.content.toLowerCase().contains(query) ||
-               n.category.toLowerCase().contains(query),
-      ).toList();
+      final matchingNotes = memoryService.searchNotes(query);
 
       if (matchingNotes.isNotEmpty) {
         buffer.writeln('Related notes:');
@@ -384,7 +320,9 @@ class MemoryTools {
   // ===========================================================================
 
   ToolResult _getOwnerInfo() {
-    if (_memories.owner.isEmpty) {
+    final memories = memoryService.memories;
+
+    if (memories.owner.isEmpty) {
       return ToolResult(
         success: true,
         message: 'No owner notes saved yet.',
@@ -393,7 +331,7 @@ class MemoryTools {
 
     final buffer = StringBuffer();
     buffer.writeln('Owner notes:');
-    for (final note in _memories.owner.notes) {
+    for (final note in memories.owner.notes) {
       buffer.writeln('  - $note');
     }
 
@@ -408,32 +346,6 @@ class MemoryTools {
   // ===========================================================================
 
   String getMemoryContext() {
-    if (_memories.isEmpty) {
-      return '';  // No memory context when empty - owner info is in UserProfile
-    }
-
-    final buffer = StringBuffer();
-    buffer.writeln('\n\nMEMORY:');
-
-    // Owner notes
-    if (!_memories.owner.isEmpty) {
-      buffer.writeln('Owner notes:');
-      for (final note in _memories.owner.notes) {
-        buffer.writeln('  - $note');
-      }
-    }
-
-    // Known people
-    if (_memories.people.isNotEmpty) {
-      buffer.writeln('People you know: ${_memories.people.map((p) => "${p.name}${p.relationship.isNotEmpty ? " (${p.relationship})" : ""}").join(", ")}.');
-    }
-
-    // Recent notes (limit to 5)
-    if (_memories.notes.isNotEmpty) {
-      final recentNotes = _memories.notes.reversed.take(5).toList();
-      buffer.writeln('Recent notes: ${recentNotes.map((n) => n.content).join("; ")}');
-    }
-
-    return buffer.toString();
+    return memoryService.getMemoryContext();
   }
 }

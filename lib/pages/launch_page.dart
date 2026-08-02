@@ -29,8 +29,6 @@ class _LaunchPageState extends State<LaunchPage> {
   String _selectedVoiceMode = 'turn_taking';
   String _selectedFaceId = '';
 
-  // Animal faces list (same as settings_page)
-  static const List<String> animalFaces = ['cat', 'dog', 'bear', 'bee', 'bird', 'crocodile', 'elephant', 'fish', 'lion', 'lobster', 'reptile', 'tiger'];
 
   // Multi-listener reference
   late final void Function(List<AgentDefinition>) _agentListener;
@@ -153,16 +151,7 @@ class _LaunchPageState extends State<LaunchPage> {
                         color: Colors.black,
                         borderRadius: BorderRadius.circular(380 * 0.08),
                       ),
-                      child: animalFaces.contains(_selectedFaceId)
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(380 * 0.08),
-                              child: Image.asset(
-                                'assets/faces/$_selectedFaceId.png',
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => _buildRobotFace(),
-                              ),
-                            )
-                          : _buildRobotFace(),
+                      child: _buildRobotFace(),
                     ),
                   ),
 

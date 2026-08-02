@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'workflow_tools.dart';
 import 'memory_tools.dart';
+import 'notes_tools.dart';
 import 'audio/assistant_audio_buffer.dart';
 import 'audio/continuous_pcm_player.dart';
 import 'audio/interruption_controller.dart';
@@ -24,6 +24,19 @@ enum RealtimeVoiceState {
 /// OpenAI Realtime API voice service
 /// Bidirectional streaming: MIC <-> WebSocket <-> OpenAI Realtime API
 class RealtimeVoiceService {
+  // Cached API key (set from conversation service via robot)
+  static String? _cachedApiKey;
+
+  /// Set the API key to use (called from conversation service when received from robot)
+  static void setApiKey(String key) {
+    _cachedApiKey = key;
+    final prefix = key.length > 15 ? '${key.substring(0, 7)}...${key.substring(key.length - 4)}' : '***';
+    debugPrint('🔑 [RealtimeVoice] API key set: $prefix');
+  }
+
+  /// Get the API key (from robot via rosbridge)
+  static String? get apiKey => _cachedApiKey;
+
   // WebSocket connection
   WebSocketChannel? _channel;
   StreamSubscription? _channelSubscription;
@@ -48,7 +61,7 @@ class RealtimeVoiceService {
   int _responseCount = 0;
 
   // Idle timeout - longer to allow natural pauses in conversation
-  static const int _idleTimeoutSeconds = 60;
+  int _idleTimeoutSeconds = 60;
   Timer? _idleTimer;
   DateTime? _lastUserSpeechTime;
 
@@ -60,12 +73,67 @@ class RealtimeVoiceService {
   // Tool handlers
   WorkflowTools? workflowToolsHandler;
   MemoryTools? memoryToolsHandler;
+  NotesTools? notesToolsHandler;
 
   // Callbacks
   void Function(RealtimeVoiceState state)? onStateChange;
   void Function(String text)? onTranscription;
   void Function(String text)? onResponse;
   void Function(String error)? onError;
+
+  // Token usage tracking for activity graph (per-response, not time-based)
+  static const int _tokenHistoryLength = 20; // Last 20 API responses
+  final List<int> _tokenHistory = List.filled(_tokenHistoryLength, 0);
+  int _lastResponseTokens = 0;
+  int _sessionTotalTokens = 0;
+  final StreamController<List<int>> _tokenHistoryController = StreamController<List<int>>.broadcast();
+
+  /// Stream of token history for UI graph (emits on each response)
+  Stream<List<int>> get tokenHistoryStream => _tokenHistoryController.stream;
+
+  /// Current token history snapshot
+  List<int> get tokenHistory => List.unmodifiable(_tokenHistory);
+
+  /// Total tokens used this session
+  int get sessionTotalTokens => _sessionTotalTokens;
+
+  /// Tokens from the last API response
+  int get lastResponseTokens => _lastResponseTokens;
+
+  /// Start token tracking (just ensures stream is ready)
+  void startTokenTracking() {
+    debugPrint('📊 [RealtimeTokenTracking] Token tracking ready');
+  }
+
+  /// Stop token tracking
+  void stopTokenTracking() {
+    // Nothing to stop - no timer
+  }
+
+  /// Reset token tracking for new session
+  void resetTokenTracking() {
+    _tokenHistory.fillRange(0, _tokenHistoryLength, 0);
+    _lastResponseTokens = 0;
+    _sessionTotalTokens = 0;
+    _tokenHistoryController.add(List.from(_tokenHistory));
+  }
+
+  /// Record tokens from an API response
+  void _recordTokens(int tokens) {
+    // Shift history left, add new response to right
+    for (int i = 0; i < _tokenHistoryLength - 1; i++) {
+      _tokenHistory[i] = _tokenHistory[i + 1];
+    }
+    _tokenHistory[_tokenHistoryLength - 1] = tokens;
+
+    _lastResponseTokens = tokens;
+    _sessionTotalTokens += tokens;
+
+    debugPrint('📊 [RealtimeTokenTracking] Recorded $tokens tokens (session total: $_sessionTotalTokens)');
+
+    // Notify listeners immediately
+    _tokenHistoryController.add(List.from(_tokenHistory));
+  }
   void Function(bool speaking)? onSpeaking;
   void Function()? onConversationComplete;
   void Function()? onPauseRequested;
@@ -77,6 +145,12 @@ class RealtimeVoiceService {
   bool get isConnected => _isConnected;
   bool get isPaused => _isPaused;
   RealtimeVoiceState get state => _state;
+
+  /// Set the idle timeout (in seconds) before conversation pauses
+  void setIdleTimeout(int seconds) {
+    _idleTimeoutSeconds = seconds;
+    debugPrint('⏱️ [Realtime] Idle timeout set to ${seconds}s');
+  }
 
   void _setupCallbacks() {
     _interruptionController.onStateChange = (state) {
@@ -189,8 +263,13 @@ class RealtimeVoiceService {
       debugPrint('🔌 [Realtime] Session configured');
 
       // If greeting provided, add it to conversation history
+      // Otherwise, trigger AI to speak first
       if (greeting != null && greeting.isNotEmpty) {
         await _sendGreeting(greeting);
+      } else {
+        // No greeting - trigger AI to generate first message
+        debugPrint('🤖 [Realtime] No greeting - AI will speak first');
+        await _triggerAiFirstMessage();
       }
 
       // Start mic stream (but won't send audio until greeting finishes)
@@ -211,9 +290,9 @@ class RealtimeVoiceService {
   }
 
   Future<void> _connect() async {
-    final apiKey = dotenv.env['OPENAI_API_KEY'];
+    final apiKey = RealtimeVoiceService.apiKey;
     if (apiKey == null || apiKey.isEmpty) {
-      throw Exception('OPENAI_API_KEY not set');
+      throw Exception('OpenAI API key not configured');
     }
 
     await _disconnect();
@@ -258,12 +337,21 @@ class RealtimeVoiceService {
       }
     }
 
+    if (notesToolsHandler != null) {
+      for (final tool in NotesTools.toolDefinitions) {
+        tools.add(_convertToolForRealtime(tool));
+      }
+    }
+
     String enhancedPrompt = _systemPrompt;
     if (workflowToolsHandler != null) {
       enhancedPrompt += workflowToolsHandler!.getWorkflowContext();
     }
     if (memoryToolsHandler != null) {
       enhancedPrompt += memoryToolsHandler!.getMemoryContext();
+    }
+    if (notesToolsHandler != null) {
+      enhancedPrompt += notesToolsHandler!.getNotesContext();
     }
 
     final vadConfig = InterruptionController.getRecommendedVadConfig();
@@ -330,7 +418,7 @@ class RealtimeVoiceService {
         'type': 'message',
         'role': 'assistant',
         'content': [
-          {'type': 'text', 'text': greeting},
+          {'type': 'output_text', 'text': greeting},
         ],
       },
     };
@@ -338,6 +426,17 @@ class RealtimeVoiceService {
 
     debugPrint('🗣️ [Realtime] Greeting added to history: $greeting');
     onResponse?.call(greeting);
+  }
+
+  /// Trigger AI to generate the first message (no user input yet)
+  Future<void> _triggerAiFirstMessage() async {
+    debugPrint('🤖 [Realtime] Triggering AI first message...');
+
+    // Send response.create to have AI speak first
+    final responseCreate = {
+      'type': 'response.create',
+    };
+    _sendEvent(responseCreate);
   }
 
   Future<void> _startAudioStream() async {
@@ -360,7 +459,8 @@ class RealtimeVoiceService {
     _audioStreamSubscription = stream.listen(
       (data) {
         if (!_isConnected || _isPaused) return;
-        // Always send audio - OpenAI needs it for VAD to detect barge-in
+        // Don't send audio while assistant is speaking - prevents false interruptions
+        if (_player.isPlaying) return;
         _sendAudioChunk(data);
       },
       onError: (error) {
@@ -472,6 +572,15 @@ class RealtimeVoiceService {
 
         case 'response.done':
           debugPrint('✅ [Realtime] Response complete');
+          // Extract token usage from response
+          final response = message['response'] as Map<String, dynamic>?;
+          final usage = response?['usage'] as Map<String, dynamic>?;
+          if (usage != null) {
+            final totalTokens = (usage['total_tokens'] as int?) ?? 0;
+            if (totalTokens > 0) {
+              _recordTokens(totalTokens);
+            }
+          }
           _handleResponseComplete();
           break;
 
@@ -513,6 +622,11 @@ class RealtimeVoiceService {
   }
 
   void _handleUserSpeechStarted() {
+    // Ignore speech events while assistant is speaking - prevents false interruptions
+    if (_player.isPlaying) {
+      debugPrint('🎤 [Realtime] Ignoring speech_started while playing');
+      return;
+    }
     _resetIdleTimer();
     _setState(RealtimeVoiceState.listening);
     _interruptionController.handleSpeechStarted();
@@ -549,7 +663,8 @@ class RealtimeVoiceService {
 
   void _startPlaybackIfReady() {
     if (_stopped || _isPaused) return;
-    if (_player.isPlaying) return;
+    // Check both playing and starting states to prevent multiple start() calls
+    if (_player.isPlaying || _player.state == PlaybackState.starting) return;
 
     _setState(RealtimeVoiceState.speaking);
     onSpeaking?.call(true);
@@ -612,9 +727,15 @@ class RealtimeVoiceService {
       'add_owner_note', 'remember_person', 'add_memory_note',
       'recall_memories', 'get_owner_info'
     };
+    const notesTools = {
+      'create_note', 'list_notes', 'search_notes', 'open_note', 'get_note', 'delete_note',
+      'create_alert', 'list_alerts', 'delete_alert', 'update_alert'
+    };
 
     if (memoryTools.contains(name) && memoryToolsHandler != null) {
       result = await memoryToolsHandler!.executeTool(toolCall);
+    } else if (notesTools.contains(name) && notesToolsHandler != null) {
+      result = await notesToolsHandler!.executeTool(toolCall);
     } else if (workflowToolsHandler != null) {
       result = await workflowToolsHandler!.executeTool(toolCall);
     } else {
@@ -708,6 +829,13 @@ class RealtimeVoiceService {
     _startIdleTimer();
     _interruptionController.markListening();
     _setState(RealtimeVoiceState.listening);
+  }
+
+  /// Trigger AI to generate a response (for resume, etc.)
+  void triggerResponse() {
+    if (_isConnected) {
+      _triggerAiFirstMessage();
+    }
   }
 
   // Completer for waiting on speech to finish
@@ -907,6 +1035,8 @@ class RealtimeVoiceService {
 
   Future<void> dispose() async {
     await stopConversation();
+    stopTokenTracking();
+    await _tokenHistoryController.close();
     _recorder.dispose();
     await _player.dispose();
     _interruptionController.dispose();

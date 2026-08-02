@@ -82,8 +82,14 @@ class AssistantAudioBuffer {
 
   /// Mark the start of a new response
   void markResponseStart(String responseId) {
-    // Clear any leftover data from previous response
-    if (_bufferedBytes > 0) {
+    // If same response ID and we have data, don't clear - prevents restart glitch
+    if (_currentResponseId == responseId && _bufferedBytes > 0) {
+      debugPrint('🎵 [AudioBuffer] Same response ID with data, not clearing: $responseId');
+      return;
+    }
+
+    // If we have data from a different response, clear it
+    if (_bufferedBytes > 0 && _currentResponseId != responseId) {
       debugPrint('🎵 [AudioBuffer] Clearing ${_bufferedBytes} bytes from previous response');
       _writePos = 0;
       _readPos = 0;

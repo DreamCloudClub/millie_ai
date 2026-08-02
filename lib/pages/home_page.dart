@@ -6,10 +6,15 @@ import '../widgets/icon_rail.dart';
 import '../widgets/top_notification.dart';
 import '../services/conversation_service.dart';
 import '../services/location_service.dart';
+import '../services/consciousness_service.dart';
+import '../services/local_memory_service.dart';
+import '../services/reminder_service.dart';
+import '../services/local_cache_service.dart';
 import 'settings_page.dart';
 import 'locations_page.dart';
 import 'launch_page.dart';
 import 'face_page.dart';
+import 'swipeable_conversation_page.dart';
 
 // Top-level state that persists across all rebuilds
 MainView? _persistedView;
@@ -31,15 +36,24 @@ class _HomePageState extends State<HomePage> {
 
   // Robot API (boot server)
   late RobotApi robotApi;
-  
+
   // AI Conversation service
   late ConversationService conversationService;
-  
+
+  // Reminder service (shared between AI and UI)
+  late ReminderService reminderService;
+
+  // Consciousness service
+  late ConsciousnessService consciousnessService;
+
+  // Local memory service
+  late LocalMemoryService localMemoryService;
+
   // Display mode (what's shown on screen)
   DisplayMode _displayMode = DisplayMode.dashboard;
   
-  // Key for accessing FacePage state
-  final GlobalKey<FacePageState> _faceKey = GlobalKey();
+  // Key for accessing SwipeableConversationPage state (which wraps FacePage)
+  final GlobalKey<SwipeableConversationPageState> _faceKey = GlobalKey();
 
   // Use top-level persisted state with fallback defaults
   // Default to Launch page for the face tablet
@@ -50,8 +64,11 @@ class _HomePageState extends State<HomePage> {
   String _workflowStatus = 'idle';
   bool _orderInProgress = false;
 
-  // Active agent face
+  // Active agent info
   String _activeFaceId = '';
+  String _activeAgentName = 'Millie';
+  String _activeVoice = 'nova';
+  String _activeVoiceMode = 'turn_taking';
   late final void Function(List<AgentDefinition>) _agentListener;
 
   @override
@@ -59,12 +76,26 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     robotApi = RobotApi("http://192.168.0.157:5050");
     rosBridge = RosBridge("ws://192.168.0.157:9090");
-    
+
     // Initialize location service
     LocationService.instance.init(rosBridge);
-    
+
+    // Initialize consciousness service
+    consciousnessService = ConsciousnessService();
+    _initializeConsciousness();
+
+    // Initialize local memory service
+    localMemoryService = LocalMemoryService();
+    _initializeLocalMemory();
+
+    // Initialize reminder service (shared)
+    reminderService = ReminderService();
+    reminderService.init();
+
     // Initialize conversation service
     conversationService = ConversationService(rosBridge: rosBridge);
+    conversationService.setConsciousnessService(consciousnessService);
+    conversationService.setReminderService(reminderService);
     _setupConversationCallbacks();
     
     // Listen for connection changes
@@ -77,11 +108,16 @@ class _HomePageState extends State<HomePage> {
     // Listen for workflow status updates (multi-listener pattern)
     rosBridge.addWorkflowStatusListener(_handleWorkflowStatus);
 
-    // Listen for agents to get active face
+    // Listen for agents to get active agent info
     _agentListener = (agents) {
       if (mounted && agents.isNotEmpty) {
         final activeAgent = agents.where((a) => a.isDefault).firstOrNull ?? agents.first;
-        setState(() => _activeFaceId = activeAgent.faceId);
+        setState(() {
+          _activeFaceId = activeAgent.faceId;
+          _activeAgentName = activeAgent.name;
+          _activeVoice = activeAgent.voice.isNotEmpty ? activeAgent.voice : 'nova';
+          _activeVoiceMode = activeAgent.voiceMode.isNotEmpty ? activeAgent.voiceMode : 'turn_taking';
+        });
       }
     };
     rosBridge.addAgentListener(_agentListener);
@@ -108,7 +144,7 @@ class _HomePageState extends State<HomePage> {
       debugPrint('▶️ Controller requested play');
       if (_displayMode == DisplayMode.face) {
         if (conversationService.isPaused) {
-          await conversationService.resumeConversation(greeting: "I'm back! What did I miss?");
+          await conversationService.resumeConversation();
           _faceKey.currentState?.setPaused(false);
           rosBridge.publishVoicePlaying();
         } else if (conversationService.isIdle) {
@@ -216,6 +252,29 @@ class _HomePageState extends State<HomePage> {
     rosBridge.connect();
   }
 
+  Future<void> _initializeConsciousness() async {
+    await consciousnessService.initialize();
+
+    // Share API key with consciousness service
+    final apiKey = await LocalCacheService.loadOpenAIApiKey();
+    if (apiKey != null && apiKey.isNotEmpty) {
+      ConsciousnessService.setApiKey(apiKey);
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _initializeLocalMemory() async {
+    await localMemoryService.initialize();
+    // Connect to consciousness service for storing memories during reflection
+    consciousnessService.setLocalMemoryService(localMemoryService);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   void _setupConversationCallbacks() {
     conversationService.onSpeakingChange = (speaking) {
       setSpeaking(speaking);
@@ -280,6 +339,18 @@ class _HomePageState extends State<HomePage> {
       _faceKey.currentState?.setPaused(true);
       rosBridge.publishVoicePaused();
     };
+
+    // Handle AI requesting page navigation
+    conversationService.onShowPage = (page) {
+      debugPrint('📺 AI requested page: $page');
+      _handleShowPage(page);
+    };
+
+    // Handle AI requesting to open a specific note
+    conversationService.onOpenNote = (noteId) {
+      debugPrint('📝 AI requested open note: $noteId');
+      _handleOpenNote(noteId);
+    };
   }
   
   /// Handle action execution from workflow
@@ -327,6 +398,57 @@ class _HomePageState extends State<HomePage> {
         }
         break;
     }
+  }
+
+  /// Handle AI page navigation requests
+  void _handleShowPage(String page) {
+    if (!mounted) return;
+
+    // Pop any overlay pages (like NoteViewPage) first
+    Navigator.of(context).popUntil((route) => route.isFirst);
+
+    // Make sure we're in face mode first (which contains the swipeable pages)
+    if (_displayMode != DisplayMode.face) {
+      _launchFace();
+    }
+
+    // Navigate to the requested page within the swipeable conversation page
+    switch (page) {
+      case 'dashboard':
+        _faceKey.currentState?.navigateToPage(SwipeableConversationPageState.dashboardPageIndex);
+        break;
+      case 'face':
+        _faceKey.currentState?.navigateToPage(SwipeableConversationPageState.facePageIndex);
+        break;
+      case 'notes':
+        _faceKey.currentState?.navigateToPage(SwipeableConversationPageState.notesPageIndex);
+        break;
+      case 'schedule':
+        _faceKey.currentState?.navigateToPage(SwipeableConversationPageState.schedulePageIndex);
+        break;
+      default:
+        debugPrint('📺 Unknown page: $page');
+    }
+  }
+
+  /// Handle AI request to open a specific note
+  void _handleOpenNote(String noteId) {
+    if (!mounted) return;
+
+    // Pop any overlay pages first
+    Navigator.of(context).popUntil((route) => route.isFirst);
+
+    // Make sure we're in face mode first
+    if (_displayMode != DisplayMode.face) {
+      _launchFace();
+    }
+
+    // Navigate to notes page and open the specific note
+    _faceKey.currentState?.navigateToPage(SwipeableConversationPageState.notesPageIndex);
+    // Small delay to let page navigation complete before opening the note
+    Future.delayed(const Duration(milliseconds: 100), () {
+      _faceKey.currentState?.openNote(noteId);
+    });
   }
 
   /// Handle workflow status changes from robot
@@ -445,12 +567,17 @@ class _HomePageState extends State<HomePage> {
   void _handleEstop() {
     debugPrint("🔴 E-STOP pressed!");
     rosBridge.publishEstop();
-    
+
+    // Stop conversation and fidget movements
+    if (conversationService.isActive) {
+      conversationService.pauseConversation();
+    }
+
     // Exit to dashboard on E-STOP
     if (_displayMode != DisplayMode.dashboard) {
       setState(() => _displayMode = DisplayMode.dashboard);
     }
-    
+
     TopNotification.show(
       context,
       message: '🛑 E-STOP ACTIVATED',
@@ -484,15 +611,18 @@ class _HomePageState extends State<HomePage> {
 
     setState(() => _displayMode = DisplayMode.face);
 
-    // Launch runs startup sequence (motion test only, no speech)
-    // Does NOT start conversation - user presses Play for that
-    debugPrint('🚀 Running startup sequence');
-    conversationService.runStartupSequence(
-      onComplete: () {
-        debugPrint('✅ Startup complete - ready state (press Play to start conversation)');
-        // Don't start conversation - just stay in ready state
-      },
-    );
+    // Small delay to ensure face widget is mounted before speaking
+    Future.delayed(const Duration(milliseconds: 100), () {
+      // Launch runs startup sequence (motion test only, no speech)
+      // Does NOT start conversation - user presses Play for that
+      debugPrint('🚀 Running startup sequence');
+      conversationService.runStartupSequence(
+        onComplete: () {
+          debugPrint('✅ Startup complete - ready state (press Play to start conversation)');
+          // Don't start conversation - just stay in ready state
+        },
+      );
+    });
   }
 
   void _startFace() {
@@ -500,12 +630,15 @@ class _HomePageState extends State<HomePage> {
 
     setState(() => _displayMode = DisplayMode.face);
 
-    // Quick start with short intro (no motion test)
-    conversationService.runQuickStart(
-      onComplete: () {
-        debugPrint('✅ Quick start complete - ready state');
-      },
-    );
+    // Small delay to ensure face widget is mounted before speaking
+    Future.delayed(const Duration(milliseconds: 100), () {
+      // Quick start with short intro (no motion test)
+      conversationService.runQuickStart(
+        onComplete: () {
+          debugPrint('✅ Quick start complete - ready state');
+        },
+      );
+    });
   }
 
   Future<void> _playFace() async {
@@ -533,6 +666,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _exitToLaunch() async {
     // Stop AI conversation and clear context
     await conversationService.cancelConversation();
+    conversationService.resetTokenTracking();
+    conversationService.clearActivityLog();
     rosBridge.publishVoiceIdle();
     setState(() => _displayMode = DisplayMode.dashboard);
   }
@@ -559,12 +694,20 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // Face mode - standalone (customer-facing)
+    // Face mode - standalone (customer-facing) with swipeable consciousness page
     if (_displayMode == DisplayMode.face) {
-      return FacePage(
+      return SwipeableConversationPage(
         key: _faceKey,
         rosBridge: rosBridge,
+        robotApi: robotApi,
+        conversationService: conversationService,
+        consciousnessService: consciousnessService,
+        localMemoryService: localMemoryService,
+        reminderService: reminderService,
         faceId: _activeFaceId,
+        agentName: _activeAgentName,
+        voice: _activeVoice,
+        voiceMode: _activeVoiceMode,
         onExit: _exitToLaunch,
         onPause: () {
           debugPrint('⏸️ Pausing voice (movement modes unaffected)');
@@ -578,7 +721,7 @@ class _HomePageState extends State<HomePage> {
           debugPrint('▶️ Play pressed');
           if (conversationService.isPaused) {
             debugPrint('▶️ Resuming paused conversation');
-            await conversationService.resumeConversation(greeting: "I'm back! What did I miss?");
+            await conversationService.resumeConversation();
             _faceKey.currentState?.setPaused(false);
             rosBridge.publishVoicePlaying();
           } else if (conversationService.isIdle) {
@@ -589,6 +732,7 @@ class _HomePageState extends State<HomePage> {
         onRefresh: () async {
           debugPrint('🔄 Refresh pressed - cancelling conversation');
           await conversationService.cancelConversation();
+          conversationService.resetTokenTracking();
           rosBridge.publishWorkflowCancel();
         },
       );
@@ -699,6 +843,7 @@ class _HomePageState extends State<HomePage> {
         return SettingsPage(
           rosBridge: rosBridge,
           robotApi: robotApi,
+          consciousnessService: consciousnessService,
           onModeStarted: _onRosStarted,
         );
     }

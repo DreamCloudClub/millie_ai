@@ -123,6 +123,10 @@ class WorkflowTools {
   // Callback when AI wants to end the conversation naturally
   void Function()? onConversationEnd;
 
+  // Callback when AI wants to show a different page
+  // Parameters: page name (face, dashboard, notes, schedule, settings, chat, identity)
+  void Function(String pageName)? onShowPage;
+
 
   // Callback to speak only if in ready/idle state (not during active conversation)
   void Function(String text)? onSpeakIfIdle;
@@ -463,22 +467,41 @@ class WorkflowTools {
         },
       },
     },
+    // SHOW PAGE
+    {
+      'type': 'function',
+      'function': {
+        'name': 'show_page',
+        'description': 'Show a different page/screen on the display. Use when user says "show me the dashboard", "open notes", "show schedule", "show your face", etc.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'page': {
+              'type': 'string',
+              'enum': ['face', 'dashboard', 'notes', 'schedule'],
+              'description': 'The page to show: face (conversation view), dashboard (AI control center), notes, schedule',
+            },
+          },
+          'required': ['page'],
+        },
+      },
+    },
     // TASK CREATION (two-step: queue_task prepares, go executes)
     {
       'type': 'function',
       'function': {
         'name': 'queue_task',
-        'description': 'Prepare a task to go somewhere and deliver a message.',
+        'description': 'Deliver a message to someone. If missing the message, ask only "What should I tell [name]?" - nothing more.',
         'parameters': {
           'type': 'object',
           'properties': {
             'recipient': {
               'type': 'string',
-              'description': 'Name of person to talk to (used to find their location)',
+              'description': 'Name of person (matches waypoint name)',
             },
             'message': {
               'type': 'string',
-              'description': 'The exact message from the user to deliver - use their words verbatim',
+              'description': 'User\'s exact words - no confirmation needed',
             },
           },
           'required': ['recipient', 'message'],
@@ -564,6 +587,10 @@ class WorkflowTools {
         return _queueTask(toolCall.arguments);
       case 'go':
         return await _go();
+
+      // Show page
+      case 'show_page':
+        return _showPage(toolCall.arguments);
 
       default:
         return ToolResult(
@@ -659,6 +686,37 @@ class WorkflowTools {
     );
   }
   
+  // ===========================================================================
+  // SHOW PAGE
+  // ===========================================================================
+
+  ToolResult _showPage(Map<String, dynamic> args) {
+    final page = args['page'] as String? ?? '';
+
+    const validPages = ['face', 'dashboard', 'notes', 'schedule'];
+    if (!validPages.contains(page)) {
+      return ToolResult(
+        success: false,
+        message: 'Unknown page "$page". Available: ${validPages.join(", ")}',
+      );
+    }
+
+    if (onShowPage != null) {
+      onShowPage!(page);
+      debugPrint('📺 [WorkflowTools] Showing page: $page');
+
+      return ToolResult(
+        success: true,
+        message: 'Showing $page.',
+      );
+    }
+
+    return ToolResult(
+      success: false,
+      message: 'Page navigation not available.',
+    );
+  }
+
   // ===========================================================================
   // SAVED TASKS
   // ===========================================================================
@@ -1449,12 +1507,10 @@ class WorkflowTools {
 
     debugPrint('📋 [WorkflowTools] Task prepared: $recipient -> "$message"');
 
-    // Return confirmation - AI should confirm and tell user to say "go"
-    final confirmMsg = 'Got it. I\'ll tell $recipient: $message. Just say go when you\'re ready.';
-
+    // Minimal response - AI should just confirm briefly
     return ToolResult(
       success: true,
-      message: confirmMsg,
+      message: 'Ready. Say go.',
     );
   }
 
@@ -1517,7 +1573,7 @@ class WorkflowTools {
 
     return ToolResult(
       success: true,
-      message: 'On my way to ${waypoint.name}.',
+      message: 'On my way.',
     );
   }
 
@@ -1556,20 +1612,16 @@ class WorkflowTools {
     final buffer = StringBuffer();
 
     buffer.writeln('\n\nROBOT CONTROL:');
-    buffer.writeln('You can control the robot using function calls.');
-    buffer.writeln('- move_robot: forward/back, turn (45°/90°/180°), spin (360°), stop');
-    buffer.writeln('- navigate_to_waypoint: go to a saved location');
-    buffer.writeln('- queue_task + go: deliver a message to someone');
-    buffer.writeln('- go_home: return to home location');
-    buffer.writeln('- stop_robot: stop all movement');
-
-    buffer.writeln('\nMESSAGE DELIVERY:');
-    buffer.writeln('1. Get the recipient name and their message');
-    buffer.writeln('2. Call queue_task with recipient and the exact message');
-    buffer.writeln('3. WAIT for them to say "go" before calling go()');
-    buffer.writeln('4. Robot will navigate and deliver the message');
-    buffer.writeln('5. Then have a normal conversation - no special flow needed');
-    buffer.writeln('6. When they say "go home" or "return", use go_home');
+    buffer.writeln('Use function calls silently - don\'t explain what you\'re doing.');
+    buffer.writeln('- queue_task + go: deliver message (call queue_task, wait for "go", then call go)');
+    buffer.writeln('- go_home: return home');
+    buffer.writeln('- move_robot / navigate_to_waypoint: movement');
+    buffer.writeln('Keep responses very brief when using tools.');
+    buffer.writeln();
+    buffer.writeln('MESSAGE DELIVERY (keep responses short):');
+    buffer.writeln('- No recipient: "Who should I tell?"');
+    buffer.writeln('- No message: "What should I tell [name]?"');
+    buffer.writeln('- Have both: call queue_task immediately');
 
     // Current mode status
     if (_wanderActive || _followingActive) {

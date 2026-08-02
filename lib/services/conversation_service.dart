@@ -5,6 +5,12 @@ import 'voice_pipeline_service.dart';
 import 'realtime_voice_service.dart';
 import 'workflow_tools.dart';
 import 'memory_tools.dart';
+import 'local_memory_service.dart';
+import 'notes_tools.dart';
+import 'reminder_service.dart';
+import 'local_cache_service.dart';
+import 'consciousness_service.dart';
+import 'fidget_service.dart';
 
 /// Conversation states
 enum ConversationState {
@@ -18,6 +24,30 @@ enum ConversationState {
   cancelled,
 }
 
+/// Activity log entry types
+enum ActivityType {
+  info,
+  user,
+  bot,
+  state,
+  movement,
+  tool,
+  error,
+}
+
+/// Activity log entry
+class ActivityEntry {
+  final String message;
+  final DateTime timestamp;
+  final ActivityType type;
+
+  const ActivityEntry({
+    required this.message,
+    required this.timestamp,
+    this.type = ActivityType.info,
+  });
+}
+
 /// Manages AI conversation flow using STT → LLM → TTS pipeline
 /// Supports two voice modes: turn_taking (default) and realtime (streaming)
 class ConversationService extends ChangeNotifier {
@@ -27,7 +57,44 @@ class ConversationService extends ChangeNotifier {
   late final VoicePipelineService _turnTakingPipeline;
   late final RealtimeVoiceService _realtimePipeline;
   late final WorkflowTools _workflowTools;
+  late final LocalMemoryService _localMemoryService;
   late final MemoryTools _memoryTools;
+  NotesTools? _notesTools;
+
+  // Fidget service for subtle movements during conversation
+  late final FidgetService _fidgetService;
+
+  // Merged token stream (combines both pipelines)
+  final StreamController<List<int>> _mergedTokenController = StreamController<List<int>>.broadcast();
+  StreamSubscription<List<int>>? _turnTakingTokenSub;
+  StreamSubscription<List<int>>? _realtimeTokenSub;
+
+  // Consciousness service (optional, set externally)
+  ConsciousnessService? _consciousnessService;
+
+  /// Set the consciousness service for session tracking
+  void setConsciousnessService(ConsciousnessService service) {
+    _consciousnessService = service;
+    // Connect local memory service to consciousness for long-term memory saving
+    service.setLocalMemoryService(_localMemoryService);
+    debugPrint('🧠 [ConversationService] Consciousness service connected');
+  }
+
+  /// Set the reminder service to enable notes and alerts tools
+  void setReminderService(ReminderService service) {
+    _notesTools = NotesTools(reminderService: service);
+
+    // Wire up open note callback
+    _notesTools!.onOpenNote = (noteId) {
+      debugPrint('📝 [ConversationService] Open note requested: $noteId');
+      onOpenNote?.call(noteId);
+    };
+
+    // Wire up to active pipeline
+    _realtimePipeline.notesToolsHandler = _notesTools;
+    _turnTakingPipeline.notesToolsHandler = _notesTools;
+    debugPrint('📝 [ConversationService] Notes tools enabled');
+  }
 
   // Mode states (mutually exclusive: Wander, Follow, Patrol)
   bool _wanderOnlyActive = false;   // Wander mode: wander only, AI stays active
@@ -77,17 +144,78 @@ class ConversationService extends ChangeNotifier {
   void Function(String text)? onUserText;
   void Function(String status)? onStatus;
   void Function()? onPauseRequested;  // Called when user says "pause"
+
+  // Activity log callbacks (legacy - still used for chaining)
+  void Function(String event)? onMovementEvent;  // Wander, patrol, navigation
+  void Function(String event)? onToolEvent;      // Workflow, memory, tasks
+  void Function(String page)? onShowPage;        // Navigate to a page (face, dashboard, notes, schedule)
+  void Function(String noteId)? onOpenNote;      // Open a specific note by ID
+
+  // Activity log (persists across page swipes)
+  static const int _maxActivityEntries = 50;
+  final List<ActivityEntry> _activityLog = [];
+  final StreamController<ActivityEntry> _activityController = StreamController<ActivityEntry>.broadcast();
+
+  /// Stream of new activity entries
+  Stream<ActivityEntry> get activityStream => _activityController.stream;
+
+  /// Current activity log (newest first)
+  List<ActivityEntry> get activityLog => List.unmodifiable(_activityLog);
+
+  /// Add an activity entry
+  void addActivity(String message, {ActivityType type = ActivityType.info}) {
+    final entry = ActivityEntry(
+      message: message,
+      timestamp: DateTime.now(),
+      type: type,
+    );
+    _activityLog.insert(0, entry);
+    if (_activityLog.length > _maxActivityEntries) {
+      _activityLog.removeRange(_maxActivityEntries, _activityLog.length);
+    }
+    _activityController.add(entry);
+  }
+
+  /// Clear activity log
+  void clearActivityLog() {
+    _activityLog.clear();
+  }
   
   ConversationService({required this.rosBridge}) {
     _workflowTools = WorkflowTools(rosBridge);
-    _memoryTools = MemoryTools(rosBridge);
+    _localMemoryService = LocalMemoryService();
+    _memoryTools = MemoryTools(_localMemoryService);
     _turnTakingPipeline = VoicePipelineService();
     _realtimePipeline = RealtimeVoiceService();
+    _fidgetService = FidgetService(rosBridge);
 
     _setupTurnTakingCallbacks();
     _setupRealtimeCallbacks();
     _setupRosBridgeCallbacks();
     _setupWorkflowCallbacks();
+    _loadCachedSettings();
+    _initializeLocalMemory();
+  }
+
+  Future<void> _initializeLocalMemory() async {
+    await _localMemoryService.initialize();
+    debugPrint('🧠 [ConversationService] Local memory initialized');
+  }
+
+  /// Load cached settings on startup
+  Future<void> _loadCachedSettings() async {
+    final timeout = await LocalCacheService.loadVoiceIdleTimeout();
+    debugPrint('⏱️ [ConversationService] Loaded cached voice timeout: ${timeout}s');
+    _turnTakingPipeline.setIdleTimeout(timeout);
+    _realtimePipeline.setIdleTimeout(timeout);
+
+    // Load cached API key
+    final cachedApiKey = await LocalCacheService.loadOpenAIApiKey();
+    if (cachedApiKey != null && cachedApiKey.isNotEmpty) {
+      VoicePipelineService.setApiKey(cachedApiKey);
+      RealtimeVoiceService.setApiKey(cachedApiKey);
+      debugPrint('🔑 [ConversationService] Loaded cached API key');
+    }
   }
   
   void _setupTurnTakingCallbacks() {
@@ -113,12 +241,18 @@ class ConversationService extends ChangeNotifier {
       if (_activeVoiceMode != 'turn_taking') return;
       debugPrint('👤 User: $text');
       onUserText?.call(text);
+      addActivity(text, type: ActivityType.user);
+      // Record for consciousness
+      _consciousnessService?.recordUserMessage(text);
     };
 
     _turnTakingPipeline.onResponse = (text) {
       if (_activeVoiceMode != 'turn_taking') return;
       debugPrint('🤖 AI: $text');
       onBotText?.call(text);
+      addActivity(text, type: ActivityType.bot);
+      // Record for consciousness
+      _consciousnessService?.recordAssistantMessage(text);
     };
 
     _turnTakingPipeline.onSpeaking = (speaking) {
@@ -128,7 +262,8 @@ class ConversationService extends ChangeNotifier {
 
     _turnTakingPipeline.onPauseRequested = () {
       if (_activeVoiceMode != 'turn_taking') return;
-      debugPrint('⏸️ Pause requested via voice command');
+      debugPrint('⏸️ Pause requested (voice command or idle timeout)');
+      _fidgetService.stop();
       onPauseRequested?.call();
     };
 
@@ -136,6 +271,7 @@ class ConversationService extends ChangeNotifier {
       if (_activeVoiceMode != 'turn_taking') return;
       debugPrint('❌ Pipeline error: $error');
       onStatus?.call('Error: $error');
+      addActivity('Error: $error', type: ActivityType.error);
     };
 
     _turnTakingPipeline.onConversationComplete = () {
@@ -170,12 +306,18 @@ class ConversationService extends ChangeNotifier {
       if (_activeVoiceMode != 'realtime') return;
       debugPrint('👤 User: $text');
       onUserText?.call(text);
+      addActivity(text, type: ActivityType.user);
+      // Record for consciousness
+      _consciousnessService?.recordUserMessage(text);
     };
 
     _realtimePipeline.onResponse = (text) {
       if (_activeVoiceMode != 'realtime') return;
       debugPrint('🤖 AI: $text');
       onBotText?.call(text);
+      addActivity(text, type: ActivityType.bot);
+      // Record for consciousness
+      _consciousnessService?.recordAssistantMessage(text);
     };
 
     _realtimePipeline.onSpeaking = (speaking) {
@@ -185,7 +327,8 @@ class ConversationService extends ChangeNotifier {
 
     _realtimePipeline.onPauseRequested = () {
       if (_activeVoiceMode != 'realtime') return;
-      debugPrint('⏸️ Pause requested via voice command');
+      debugPrint('⏸️ Pause requested (voice command or idle timeout)');
+      _fidgetService.stop();
       onPauseRequested?.call();
     };
 
@@ -193,6 +336,7 @@ class ConversationService extends ChangeNotifier {
       if (_activeVoiceMode != 'realtime') return;
       debugPrint('❌ Realtime error: $error');
       onStatus?.call('Error: $error');
+      addActivity('Error: $error', type: ActivityType.error);
     };
 
     _realtimePipeline.onConversationComplete = () {
@@ -211,7 +355,12 @@ class ConversationService extends ChangeNotifier {
     _setState(ConversationState.complete);
     if (_currentAction != null) {
       rosBridge.publishActionComplete(_currentAction!.name);
+      onToolEvent?.call('Action complete: ${_currentAction!.name}');
+      addActivity('Action complete: ${_currentAction!.name}', type: ActivityType.tool);
     }
+
+    // End consciousness session (runs AI reflection in background)
+    _consciousnessService?.endSession();
 
     // Check if we should resume patrol mode
     final shouldResumePatrol = _wasPatrollingBeforeConversation;
@@ -281,9 +430,34 @@ class ConversationService extends ChangeNotifier {
     // Listen for speak commands from controller (robot speaks text)
     rosBridge.onSpeakCommand = _handleSpeakCommand;
 
+    // Listen for voice idle timeout changes from controller
+    rosBridge.onVoiceIdleTimeout = _handleVoiceIdleTimeout;
+
+    // Listen for API key from robot
+    rosBridge.onApiKeyReceived = _handleApiKeyReceived;
+    rosBridge.onApiKeyStatus = _handleApiKeyStatus;
+
     // Request data on startup
     rosBridge.requestAgents();
     rosBridge.requestActions();
+    rosBridge.requestApiKey();  // Request actual API key for voice services
+  }
+
+  /// Handle API key received from robot
+  void _handleApiKeyReceived(String key) {
+    if (key.isNotEmpty) {
+      VoicePipelineService.setApiKey(key);
+      RealtimeVoiceService.setApiKey(key);
+      LocalCacheService.saveOpenAIApiKey(key);
+      debugPrint('🔑 [ConversationService] API key received and cached');
+    }
+  }
+
+  /// Handle API key status update from robot
+  void _handleApiKeyStatus(Map<String, dynamic> status) {
+    final isSet = status['is_set'] as bool? ?? false;
+    final prefix = status['key_prefix'] as String? ?? '';
+    debugPrint('🔑 [ConversationService] API key status: isSet=$isSet, prefix=$prefix');
   }
 
   /// Handle navigation status for task flow
@@ -296,6 +470,8 @@ class ConversationService extends ChangeNotifier {
       debugPrint('❌ [ConversationService] Navigation failed');
       _pendingArrivalMessage = null;
       _pausedForTask = false;
+      onMovementEvent?.call('Navigation failed');
+      addActivity('Navigation failed', type: ActivityType.movement);
       _resumeSilently();
     }
     // For succeeded: wait for action execute from workflow executor
@@ -305,6 +481,15 @@ class ConversationService extends ChangeNotifier {
   void _handleSpeakCommand(String text) {
     debugPrint('🔊 [ConversationService] Speaking from controller: $text');
     _turnTakingPipeline.speakText(text);
+  }
+
+  /// Handle voice idle timeout change from controller
+  void _handleVoiceIdleTimeout(int seconds) {
+    debugPrint('⏱️ [ConversationService] Voice idle timeout set to ${seconds}s');
+    _turnTakingPipeline.setIdleTimeout(seconds);
+    _realtimePipeline.setIdleTimeout(seconds);
+    // Cache locally so it persists
+    LocalCacheService.saveVoiceIdleTimeout(seconds);
   }
 
   /// Resume AI silently (no "I'm back" intro)
@@ -405,6 +590,8 @@ class ConversationService extends ChangeNotifier {
     _workflowTools.onWorkflowConfirmed = () {
       debugPrint('🚀 Workflow confirmed - stopping conversation immediately');
       _actionCompleteHandled = true;  // Prevent double-handling
+      onToolEvent?.call('Workflow confirmed');
+      addActivity('Workflow confirmed', type: ActivityType.tool);
 
       // Stop listening/speaking immediately - no more conversation
       // Workflow was already published by workflow_tools.confirm_and_execute
@@ -462,6 +649,8 @@ class ConversationService extends ChangeNotifier {
       debugPrint('📋 [ConversationService] Temp task queued: ${action.name}');
       // Register temp action so it can be looked up when workflow executes it
       _tempActions[action.name] = action;
+      onToolEvent?.call('Task queued: ${action.name}');
+      addActivity('Task queued: ${action.name}', type: ActivityType.tool);
     };
 
     _workflowTools.onConversationEnd = () {
@@ -484,6 +673,8 @@ class ConversationService extends ChangeNotifier {
       // Store pending message for when action executes
       _pendingArrivalMessage = messageToSpeak;
       _pausedForTask = true;
+      onMovementEvent?.call('Navigating to $destination');
+      addActivity('Navigating to $destination', type: ActivityType.movement);
 
       // IMPORTANT: Delay the pause to let the AI speak "On my way!" first
       // If we pause immediately, the response audio gets ignored
@@ -509,6 +700,12 @@ class ConversationService extends ChangeNotifier {
         debugPrint('🔇 [ConversationService] Skipping speech (in conversation): $text');
       }
     };
+
+    // Handle page navigation requests from AI
+    _workflowTools.onShowPage = (page) {
+      debugPrint('📺 [ConversationService] Show page requested: $page');
+      onShowPage?.call(page);
+    };
   }
 
   // ===========================================================================
@@ -532,6 +729,8 @@ class ConversationService extends ChangeNotifier {
 
     // AI stays active - no changes to conversation state
     debugPrint('✅ Wander mode active - AI can still talk');
+    onMovementEvent?.call('Wander mode started');
+    addActivity('Wander mode started', type: ActivityType.movement);
   }
 
   /// Stop wander mode
@@ -541,6 +740,8 @@ class ConversationService extends ChangeNotifier {
 
     // Disable wander
     rosBridge.deactivateWanderMode();
+    onMovementEvent?.call('Wander mode stopped');
+    addActivity('Wander mode stopped', type: ActivityType.movement);
   }
 
   bool get isWanderOnlyActive => _wanderOnlyActive;
@@ -564,6 +765,8 @@ class ConversationService extends ChangeNotifier {
     rosBridge.activatePatrolMode();
 
     debugPrint('🔍 Patrol mode active - waiting for person detection');
+    onMovementEvent?.call('Patrol mode started');
+    addActivity('Patrol mode started', type: ActivityType.movement);
   }
 
   /// Stop patrol mode
@@ -573,6 +776,8 @@ class ConversationService extends ChangeNotifier {
 
     // Disable wander and person follower
     rosBridge.deactivatePatrolMode();
+    onMovementEvent?.call('Patrol mode stopped');
+    addActivity('Patrol mode stopped', type: ActivityType.movement);
   }
 
   bool get isPatrolModeActive => _patrolModeActive;
@@ -593,7 +798,7 @@ class ConversationService extends ChangeNotifier {
     if (_conversationPausedForPatrol) {
       debugPrint('🔄 Resuming paused conversation from patrol');
       _conversationPausedForPatrol = false;
-      await resumeConversation(greeting: "Hey there. How's it going?");
+      await resumeConversation();
     } else {
       // Start fresh conversation with greeting
       debugPrint('🆕 Starting new conversation from patrol');
@@ -629,6 +834,9 @@ class ConversationService extends ChangeNotifier {
       _reset();
     }
 
+    // Start consciousness session
+    _consciousnessService?.startSession();
+
     _currentAction = action;
     _setState(ConversationState.starting);
 
@@ -642,15 +850,17 @@ class ConversationService extends ChangeNotifier {
     _activeVoiceMode = _currentAgent?.voiceMode ?? 'turn_taking';
     debugPrint('🎙️ Voice mode: $_activeVoiceMode');
 
-    // Configure tool handlers - all actions get workflow + memory tools
+    // Configure tool handlers - all actions get workflow + memory + notes tools
     if (_activeVoiceMode == 'realtime') {
       _realtimePipeline.memoryToolsHandler = _memoryTools;
       _realtimePipeline.workflowToolsHandler = _workflowTools;
-      debugPrint('🧭 [Realtime] Enabled: workflow + memory tools');
+      _realtimePipeline.notesToolsHandler = _notesTools;
+      debugPrint('🧭 [Realtime] Enabled: workflow + memory + notes tools');
     } else {
       _turnTakingPipeline.memoryToolsHandler = _memoryTools;
       _turnTakingPipeline.workflowToolsHandler = _workflowTools;
-      debugPrint('🧭 [TurnTaking] Enabled: workflow + memory tools');
+      _turnTakingPipeline.notesToolsHandler = _notesTools;
+      debugPrint('🧭 [TurnTaking] Enabled: workflow + memory + notes tools');
     }
 
     debugPrint('🎬 Starting conversation: ${action.name}');
@@ -658,11 +868,12 @@ class ConversationService extends ChangeNotifier {
     // Build system prompt (uses agent if available)
     final systemPrompt = buildSystemPrompt();
 
-    // Get greeting and apply template substitution
-    String greeting = action.openingGreeting.isNotEmpty
-        ? action.openingGreeting
-        : 'Hello! How can I help you today?';
-    greeting = _substituteTemplateVariables(greeting);
+    // Get greeting from action (if any) and apply template substitution
+    // If no greeting, AI will speak first naturally based on identity context
+    String? greeting;
+    if (action.openingGreeting.isNotEmpty) {
+      greeting = _substituteTemplateVariables(action.openingGreeting);
+    }
 
     // Get voice
     final voice = getVoice();
@@ -701,23 +912,53 @@ class ConversationService extends ChangeNotifier {
     } else {
       _turnTakingPipeline.pause();
     }
+    // Stop fidgeting when paused
+    _fidgetService.stop();
     onStatus?.call('Paused');
+    notifyListeners();
   }
 
-  /// Resume the conversation with optional greeting
-  Future<void> resumeConversation({String? greeting}) async {
-    // Speak greeting before resuming if provided
-    if (greeting != null && greeting.isNotEmpty) {
-      final voice = getVoice();
-      await _turnTakingPipeline.speakOnly(text: greeting, voice: voice);
-    }
-
+  /// Resume the conversation - AI speaks naturally then listens
+  Future<void> resumeConversation() async {
+    // Restart fidgeting when conversation resumes
+    _fidgetService.start();
     if (_activeVoiceMode == 'realtime') {
       await _realtimePipeline.resume();
+      // Trigger AI to speak first after resume
+      _realtimePipeline.triggerResponse();
     } else {
-      await _turnTakingPipeline.resume();
+      await _turnTakingPipeline.resumeWithResponse();
     }
     onStatus?.call('Resumed');
+    notifyListeners();
+  }
+
+  /// Deliver an alert and start listening for user response
+  /// Used for reminder/alert delivery - interrupts current state
+  Future<void> deliverAlert({
+    required String alertMessage,
+    required String alertContext,
+  }) async {
+    debugPrint('🔔 [ConversationService] Delivering alert: $alertMessage');
+
+    // Stop any current conversation
+    if (_state != ConversationState.idle) {
+      await _stopActivePipeline();
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
+    _activeVoiceMode = 'turn_taking';
+
+    // Deliver the alert via turn-taking pipeline
+    await _turnTakingPipeline.deliverAlertAndListen(
+      alertMessage: alertMessage,
+      alertContext: alertContext,
+      voice: _currentAgent?.voice ?? 'nova',
+    );
+
+    _setState(ConversationState.listening);
+    onStatus?.call('Alert delivered');
+    notifyListeners();
   }
 
   /// Inject a prompt to make the AI respond (realtime mode only)
@@ -741,6 +982,59 @@ class ConversationService extends ChangeNotifier {
 
   /// Get current voice mode
   String get voiceMode => _activeVoiceMode;
+
+  /// Token usage tracking - merged stream from both pipelines
+  Stream<List<int>> get tokenHistoryStream => _mergedTokenController.stream;
+
+  /// Current token history snapshot (from active mode)
+  List<int> get tokenHistory => _activeVoiceMode == 'realtime'
+      ? _realtimePipeline.tokenHistory
+      : _turnTakingPipeline.tokenHistory;
+
+  /// Total tokens used this session (combined from both services)
+  int get sessionTotalTokens =>
+      _turnTakingPipeline.sessionTotalTokens + _realtimePipeline.sessionTotalTokens;
+
+  /// Tokens from the last API response
+  int get lastResponseTokens => _activeVoiceMode == 'realtime'
+      ? _realtimePipeline.lastResponseTokens
+      : _turnTakingPipeline.lastResponseTokens;
+
+  /// Start token tracking on both services and merge streams
+  void startTokenTracking() {
+    _turnTakingPipeline.startTokenTracking();
+    _realtimePipeline.startTokenTracking();
+
+    // Subscribe to both streams and forward to merged controller
+    _turnTakingTokenSub?.cancel();
+    _realtimeTokenSub?.cancel();
+
+    _turnTakingTokenSub = _turnTakingPipeline.tokenHistoryStream.listen((history) {
+      if (_activeVoiceMode == 'turn_taking') {
+        _mergedTokenController.add(history);
+      }
+    });
+
+    _realtimeTokenSub = _realtimePipeline.tokenHistoryStream.listen((history) {
+      if (_activeVoiceMode == 'realtime') {
+        _mergedTokenController.add(history);
+      }
+    });
+  }
+
+  /// Stop token tracking on both services
+  void stopTokenTracking() {
+    _turnTakingTokenSub?.cancel();
+    _realtimeTokenSub?.cancel();
+    _turnTakingPipeline.stopTokenTracking();
+    _realtimePipeline.stopTokenTracking();
+  }
+
+  /// Reset token tracking on both services
+  void resetTokenTracking() {
+    _turnTakingPipeline.resetTokenTracking();
+    _realtimePipeline.resetTokenTracking();
+  }
 
   /// Get the default agent (if one is set)
   AgentDefinition? getDefaultAgent() {
@@ -864,6 +1158,9 @@ class ConversationService extends ChangeNotifier {
 
     debugPrint('🎯 Starting conversation with agent: ${_currentAgent!.name}');
 
+    // Start consciousness session
+    _consciousnessService?.startSession();
+
     _setState(ConversationState.starting);
 
     // Determine voice mode from agent
@@ -874,10 +1171,12 @@ class ConversationService extends ChangeNotifier {
     if (_activeVoiceMode == 'realtime') {
       _realtimePipeline.memoryToolsHandler = _memoryTools;
       _realtimePipeline.workflowToolsHandler = _workflowTools;
+      _realtimePipeline.notesToolsHandler = _notesTools;
       debugPrint('🧭 [Realtime] All tools enabled');
     } else {
       _turnTakingPipeline.memoryToolsHandler = _memoryTools;
       _turnTakingPipeline.workflowToolsHandler = _workflowTools;
+      _turnTakingPipeline.notesToolsHandler = _notesTools;
       debugPrint('🧭 [TurnTaking] All tools enabled');
     }
 
@@ -889,32 +1188,16 @@ class ConversationService extends ChangeNotifier {
 
     debugPrint('🗣️ Voice: $voice');
 
-    // Get intro message from agent (if any) - only if withIntro is true
-    String? introMessage;
-    if (withIntro) {
-      introMessage = _currentAgent?.introMessage;
-      if (introMessage != null && introMessage.isNotEmpty) {
-        debugPrint('👋 Intro message: $introMessage');
-      }
-    }
-
-    // Start the appropriate pipeline
+    // Start the appropriate pipeline - AI speaks first naturally based on identity context
     if (_activeVoiceMode == 'realtime') {
-      // For realtime: speak intro via TTS first, then start realtime
-      if (introMessage != null && introMessage.isNotEmpty) {
-        await _turnTakingPipeline.speakOnly(text: introMessage, voice: voice);
-      }
       await _realtimePipeline.startConversation(
         systemPrompt: systemPrompt,
         voice: voice,
-        greeting: introMessage,  // Added to history as context
       );
     } else {
-      // For turn-taking: greeting is spoken by the pipeline
       await _turnTakingPipeline.startConversation(
         systemPrompt: systemPrompt,
         voice: voice,
-        greeting: introMessage,
       );
     }
 
@@ -937,6 +1220,8 @@ class ConversationService extends ChangeNotifier {
     debugPrint('🎯 [ConversationService] Handling task action: ${action.name}');
     debugPrint('🎯 [ConversationService] Pending message: $_pendingArrivalMessage');
     debugPrint('🎯 [ConversationService] Action greeting: ${action.openingGreeting}');
+    onMovementEvent?.call('Arrived at destination');
+    addActivity('Arrived at destination', type: ActivityType.movement);
 
     // Use the stored message or action's greeting
     final message = _pendingArrivalMessage ?? action.openingGreeting;
@@ -952,19 +1237,21 @@ class ConversationService extends ChangeNotifier {
       return;
     }
 
-    debugPrint('💬 [ConversationService] Active voice mode: $_activeVoiceMode');
+    final voice = getVoice();
+    debugPrint('💬 [ConversationService] Delivering message via direct TTS');
 
-    // Simple flow: deliver message, then resume normal conversation
-    if (_activeVoiceMode == 'realtime') {
-      await _realtimePipeline.speakAndResume(message);
-    } else {
-      final voice = getVoice();
-      await _turnTakingPipeline.speakOnly(text: message, voice: voice);
-      _resumeSilently();
-    }
+    // Use direct TTS for delivery (not through AI) - prevents verbose interpretation
+    await _turnTakingPipeline.speakOnly(text: message, voice: voice);
 
     // Mark action as complete
     rosBridge.publishActionComplete(action.name, delivered: true);
+
+    // Resume the appropriate pipeline for ongoing conversation
+    if (_activeVoiceMode == 'realtime') {
+      await _realtimePipeline.resume();
+    } else {
+      _resumeSilently();
+    }
   }
 
   /// Stop listening (when user finishes speaking)
@@ -984,6 +1271,10 @@ class ConversationService extends ChangeNotifier {
 
     await _stopActivePipeline();
 
+    // End consciousness session (runs AI reflection in background)
+    // This generates a summary and updates identity even when cancelled
+    _consciousnessService?.endSession();
+
     _reset();
   }
   
@@ -994,6 +1285,7 @@ class ConversationService extends ChangeNotifier {
     // Core role definition
     buffer.writeln('ROLE: You are a friendly robot assistant.');
     buffer.writeln('Be conversational and natural. Keep responses concise but expand when the topic warrants it.');
+    buffer.writeln('IMPORTANT: Never list your capabilities or explain what you can do unless specifically asked. Greetings should be natural and brief - just say hello, not a menu of options.');
     buffer.writeln();
 
     // User profile (owner info)
@@ -1022,6 +1314,11 @@ class ConversationService extends ChangeNotifier {
     // Memory context - what the agent knows/remembers
     buffer.write(_memoryTools.getMemoryContext());
 
+    // Consciousness context - core values, desires, greeting
+    if (_consciousnessService != null && _consciousnessService!.isInitialized) {
+      buffer.write(_consciousnessService!.getConsciousnessContext());
+    }
+
     return buffer.toString();
   }
   
@@ -1041,11 +1338,55 @@ class ConversationService extends ChangeNotifier {
     return 'alloy';
   }
   
+  ConversationState? _lastLoggedState;
+
   void _setState(ConversationState newState) {
     _state = newState;
     notifyListeners();
     onStateChange?.call(newState);  // Notify UI for face animations
     debugPrint('📍 Conversation state: ${newState.name}');
+
+    // Fidget: start when conversation starts, stop when it ends
+    switch (newState) {
+      case ConversationState.starting:
+      case ConversationState.listening:
+        _fidgetService.start();
+        break;
+      case ConversationState.idle:
+      case ConversationState.complete:
+      case ConversationState.cancelled:
+        _fidgetService.stop();
+        break;
+      default:
+        break;
+    }
+
+    // Log meaningful state transitions to activity feed
+    if (_lastLoggedState != newState) {
+      switch (newState) {
+        case ConversationState.starting:
+          addActivity('Conversation starting', type: ActivityType.state);
+          break;
+        case ConversationState.listening:
+          if (_lastLoggedState == ConversationState.idle ||
+              _lastLoggedState == ConversationState.starting) {
+            addActivity('Listening...', type: ActivityType.state);
+          }
+          break;
+        case ConversationState.processing:
+          addActivity('Processing...', type: ActivityType.state);
+          break;
+        case ConversationState.complete:
+          addActivity('Conversation ended', type: ActivityType.state);
+          break;
+        case ConversationState.cancelled:
+          addActivity('Conversation cancelled', type: ActivityType.state);
+          break;
+        default:
+          break;
+      }
+      _lastLoggedState = newState;
+    }
   }
   
   void _reset() {
@@ -1064,8 +1405,9 @@ class ConversationService extends ChangeNotifier {
   void dispose() {
     rosBridge.removeAgentListener(_agentListener);
     rosBridge.removeActionListener(_actionListener);
+    _activityController.close();
     _workflowTools.dispose();
-    _memoryTools.dispose();
+    _fidgetService.dispose();
     _turnTakingPipeline.dispose();
     _realtimePipeline.dispose();
     super.dispose();

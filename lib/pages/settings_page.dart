@@ -5,6 +5,10 @@ import '../utils/rosbridge.dart';
 import '../utils/robot_api.dart';
 import '../widgets/top_notification.dart';
 import '../services/button_config_service.dart';
+import '../services/local_cache_service.dart';
+import '../services/voice_pipeline_service.dart';
+import '../services/realtime_voice_service.dart';
+import '../services/consciousness_service.dart';
 
 // Top-level state that persists across orientation changes
 _SettingsSection? _persistedSection;
@@ -13,9 +17,16 @@ _SettingsSection? _persistedSection;
 class SettingsPage extends StatefulWidget {
   final RosBridge rosBridge;
   final RobotApi robotApi;
+  final ConsciousnessService? consciousnessService;
   final void Function(String mode)? onModeStarted;  // Callback when ROS starts in a mode
-  
-  const SettingsPage({super.key, required this.rosBridge, required this.robotApi, this.onModeStarted});
+
+  const SettingsPage({
+    super.key,
+    required this.rosBridge,
+    required this.robotApi,
+    this.consciousnessService,
+    this.onModeStarted,
+  });
   
   // Static sidebar state (accessible from outside)
   static bool _sidebarCollapsed = false;
@@ -98,10 +109,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     onPressed: () => setState(() => _currentSection = _SettingsSection.aiAgents),
                   ),
                   _SectionButton(
-                    icon: Icons.memory,
-                    label: 'Memory',
-                    isActive: _currentSection == _SettingsSection.memory,
-                    onPressed: () => setState(() => _currentSection = _SettingsSection.memory),
+                    icon: Icons.settings,
+                    label: 'System',
+                    isActive: _currentSection == _SettingsSection.system,
+                    onPressed: () => setState(() => _currentSection = _SettingsSection.system),
                   ),
                   _SectionButton(
                     icon: Icons.person,
@@ -109,9 +120,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     isActive: _currentSection == _SettingsSection.profile,
                     onPressed: () => setState(() => _currentSection = _SettingsSection.profile),
                   ),
-                  
+
                   const Spacer(),
-                  
+
                   _SectionButton(
                     icon: Icons.info_outline,
                     label: 'About',
@@ -148,15 +159,15 @@ class _SettingsPageState extends State<SettingsPage> {
         return _ProfileSection(rosBridge: widget.rosBridge);
       case _SettingsSection.aiAgents:
         return _AIAgentsSection(rosBridge: widget.rosBridge);
-      case _SettingsSection.memory:
-        return _MemorySection(rosBridge: widget.rosBridge);
+      case _SettingsSection.system:
+        return _SystemSection(rosBridge: widget.rosBridge);
       case _SettingsSection.about:
         return const _AboutSection();
     }
   }
 }
 
-enum _SettingsSection { robot, aiAgents, memory, profile, about }
+enum _SettingsSection { robot, aiAgents, profile, system, about }
 
 /// Section button in sidebar
 class _SectionButton extends StatelessWidget {
@@ -312,45 +323,17 @@ class _RobotSectionState extends State<_RobotSection> {
   }
 
   Future<void> _saveMap() async {
-    final controller = TextEditingController(text: 'millie_map');
-    
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Save Map', style: TextStyle(color: AppColors.textPrimary)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: AppColors.textPrimary),
-          decoration: const InputDecoration(
-            hintText: 'Map name',
-            hintStyle: TextStyle(color: AppColors.textMuted),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Save', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+    // Single map system - always saves to millie_map
+    setState(() => _loading = true);
+    final result = await widget.robotApi.saveMap('millie_map');
+    setState(() => _loading = false);
+
+    _showSnackBar(
+      result.success ? 'Map saved' : 'Failed: ${result.message}',
+      result.success ? AppColors.success : AppColors.danger,
     );
-    
-    if (name != null && name.isNotEmpty) {
-      setState(() => _loading = true);
-      final result = await widget.robotApi.saveMap(name);
-      setState(() => _loading = false);
-      
-      _showSnackBar(
-        result.success ? 'Map saved: $name' : 'Failed: ${result.message}',
-        result.success ? AppColors.success : AppColors.danger,
-      );
-      
-      await _refresh();
-    }
+
+    await _refresh();
   }
   
   Future<void> _selectMap(String name) async {
@@ -1664,14 +1647,9 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
 
   final _nameController = TextEditingController();
   final _personalityController = TextEditingController();
-  final _introMessageController = TextEditingController();
   String _selectedFaceId = '';
   String _selectedVoice = 'nova';
   String _voiceMode = 'turn_taking'; // 'turn_taking' or 'realtime'
-  String _faceType = 'robot'; // 'robot' or 'animal'
-
-  // Available faces and voices
-  static const List<String> animalFaces = ['cat', 'dog', 'bear', 'bee', 'bird', 'crocodile', 'elephant', 'fish', 'lion', 'lobster', 'reptile', 'tiger'];
   // TTS-1 voices (turn-taking mode)
   static const List<String> turnTakingVoices = ['alloy', 'echo', 'fable', 'nova', 'onyx', 'shimmer'];
   // Realtime API voices
@@ -1718,15 +1696,13 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     widget.rosBridge.removeAgentListener(_agentListener);
     _nameController.dispose();
     _personalityController.dispose();
-    _introMessageController.dispose();
     super.dispose();
   }
 
   void _startNewAgent() {
     _nameController.clear();
     _personalityController.clear();
-    _introMessageController.clear();
-    _selectedFaceId = 'cat';
+    _selectedFaceId = '';
     _selectedVoice = 'nova';
     _voiceMode = 'turn_taking';
     setState(() => _editingIndex = -1);
@@ -1736,33 +1712,30 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
     final agent = _agents[index];
     _nameController.text = agent.name;
     _personalityController.text = agent.personality;
-    _introMessageController.text = agent.introMessage;
     _selectedFaceId = agent.faceId;
-    _faceType = animalFaces.contains(agent.faceId) ? 'animal' : 'robot';
     _selectedVoice = agent.voice.isNotEmpty ? agent.voice : 'nova';
     _voiceMode = agent.voiceMode;
     setState(() => _editingIndex = index);
   }
-  
+
   void _saveAgent() {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
       TopNotification.show(context, message: 'Agent name is required', backgroundColor: AppColors.danger);
       return;
     }
-    
+
     // Preserve isDefault from existing agent if editing
     final existingIsDefault = _editingIndex != null && _editingIndex! >= 0 && _editingIndex! < _agents.length
         ? _agents[_editingIndex!].isDefault
         : false;
-    
+
     final agent = AgentDefinition(
       name: name,
       faceId: _selectedFaceId,
       voice: _selectedVoice,
       voiceMode: _voiceMode,
       personality: _personalityController.text.trim(),
-      introMessage: _introMessageController.text.trim(),
       isDefault: existingIsDefault,
     );
     
@@ -1949,24 +1922,8 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Face preview - larger like millie_mini
-              animalFaces.contains(agent.faceId)
-                  ? Container(
-                      width: 100,
-                      height: 100,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(AppRadius.small),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(AppRadius.small),
-                        child: Image.asset(
-                          'assets/faces/${agent.faceId}.png',
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildRobotFacePreview(100),
-                        ),
-                      ),
-                    )
-                  : _buildRobotFacePreview(100),
+              // Face preview
+              _buildRobotFacePreview(100),
               const SizedBox(width: AppSpacing.lg),
               // Agent Info
               Expanded(
@@ -2165,15 +2122,6 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
                   maxLines: 3,
                   textCapitalization: TextCapitalization.sentences,
                 ),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(
-                  controller: _introMessageController,
-                  label: 'Intro Message',
-                  hint: 'Greeting when agent activates',
-                  maxLines: 2,
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-
                 const SizedBox(height: AppSpacing.xl),
 
                 // Save button
@@ -2311,141 +2259,18 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
   }
 
   Widget _buildFaceSelector() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Current face preview (large, centered)
-        Center(
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border, width: 2),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(AppRadius.medium - 1),
-              child: _faceType == 'animal' && _selectedFaceId.isNotEmpty
-                  ? Image.asset(
-                      'assets/faces/$_selectedFaceId.png',
-                      width: 120,
-                      height: 120,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _buildRobotFacePreview(120),
-                    )
-                  : _buildRobotFacePreview(120),
-            ),
-          ),
+    // Just show robot face preview
+    return Center(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadius.medium),
+          border: Border.all(color: AppColors.border, width: 2),
         ),
-        const SizedBox(height: AppSpacing.lg),
-        const Text(
-          'Face Type',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-          ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.medium - 1),
+          child: _buildRobotFacePreview(120),
         ),
-        const SizedBox(height: AppSpacing.xs),
-        // Face type toggle buttons
-        Row(
-          children: [
-            Expanded(
-              child: GestureDetector(
-                onTap: () => setState(() {
-                  _faceType = 'robot';
-                  _selectedFaceId = '';
-                }),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                  decoration: BoxDecoration(
-                    color: _faceType == 'robot' ? AppColors.accent : AppColors.background,
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(
-                      color: _faceType == 'robot' ? AppColors.accent : AppColors.border,
-                    ),
-                  ),
-                  child: Center(
-                    child: Text(
-                      'Robot',
-                      style: TextStyle(
-                        color: _faceType == 'robot' ? Colors.white : AppColors.textSecondary,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: AppSpacing.sm),
-            Expanded(
-              child: GestureDetector(
-                onTap: () => setState(() {
-                  _faceType = 'animal';
-                  if (_selectedFaceId.isEmpty) _selectedFaceId = 'cat';
-                }),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                  decoration: BoxDecoration(
-                    color: _faceType == 'animal' ? AppColors.accent : AppColors.background,
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(
-                      color: _faceType == 'animal' ? AppColors.accent : AppColors.border,
-                    ),
-                  ),
-                  child: Center(
-                    child: Text(
-                      'Animal',
-                      style: TextStyle(
-                        color: _faceType == 'animal' ? Colors.white : AppColors.textSecondary,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        // Animal faces grid (only shown when Animal is selected)
-        if (_faceType == 'animal') ...[
-          const SizedBox(height: AppSpacing.md),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              crossAxisSpacing: AppSpacing.sm,
-              mainAxisSpacing: AppSpacing.sm,
-            ),
-            itemCount: animalFaces.length,
-            itemBuilder: (context, index) {
-              final faceId = animalFaces[index];
-              final isSelected = _selectedFaceId == faceId;
-              return GestureDetector(
-                onTap: () => setState(() => _selectedFaceId = faceId),
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(
-                      color: isSelected ? AppColors.accent : AppColors.border,
-                      width: isSelected ? 2 : 1,
-                    ),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadius.small - 1),
-                    child: Image.asset(
-                      'assets/faces/$faceId.png',
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Center(
-                        child: Text(faceId[0].toUpperCase(), style: const TextStyle(color: AppColors.textMuted)),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      ],
+      ),
     );
   }
 
@@ -2619,734 +2444,310 @@ class _AIAgentsSectionState extends State<_AIAgentsSection> {
   }
 }
 
-/// Memory section - View and edit robot memories
-class _MemorySection extends StatefulWidget {
+/// System section - Voice settings and API keys
+class _SystemSection extends StatefulWidget {
   final RosBridge rosBridge;
 
-  const _MemorySection({required this.rosBridge});
+  const _SystemSection({required this.rosBridge});
 
   @override
-  State<_MemorySection> createState() => _MemorySectionState();
+  State<_SystemSection> createState() => _SystemSectionState();
 }
 
-class _MemorySectionState extends State<_MemorySection> {
-  MemoryData _memories = MemoryData();
-  bool _isEditing = false;
-  String _editingType = ''; // 'owner_note', 'person', 'note'
-  int? _editingIndex;
-  bool _isConnected = false;
+class _SystemSectionState extends State<_SystemSection> {
+  int _voiceIdleTimeout = 60;
+  bool _apiKeyIsSet = false;
+  String _apiKeyPrefix = '';
+  bool _localApiKeyCached = false;
+  String _localApiKeyPrefix = '';
+  bool _obscureApiKey = true;
+  bool _isSavingKey = false;
 
-  // Person editing controllers
-  final _personNameController = TextEditingController();
-  final _personRelationshipController = TextEditingController();
-  final _personInterestsController = TextEditingController();
-  final _personNotesController = TextEditingController();
+  final _apiKeyController = TextEditingController();
 
-  // Note editing controller
-  final _noteContentController = TextEditingController();
-  String _noteCategory = 'general';
-
-  late final void Function(MemoryData) _memoryListener;
+  static const List<int> _timeoutOptions = [30, 60, 120, 300];
+  static const Map<int, String> _timeoutLabels = {
+    30: '30 seconds',
+    60: '1 minute',
+    120: '2 minutes',
+    300: '5 minutes',
+  };
 
   @override
   void initState() {
     super.initState();
-    _isConnected = widget.rosBridge.isConnected;
-    widget.rosBridge.onConnectionChange = _onConnectionChange;
-    _setupMemoryListener();
-    widget.rosBridge.requestMemories();
-  }
-
-  void _onConnectionChange(bool connected) {
-    if (mounted) {
-      setState(() => _isConnected = connected);
-    }
-  }
-
-  void _setupMemoryListener() {
-    _memoryListener = (memories) {
-      if (mounted) {
-        setState(() => _memories = memories);
-      }
-    };
-    widget.rosBridge.addMemoryListener(_memoryListener);
+    _loadSettings();
+    _setupListeners();
+    widget.rosBridge.requestApiKeyStatus();
   }
 
   @override
   void dispose() {
-    widget.rosBridge.removeMemoryListener(_memoryListener);
-    _personNameController.dispose();
-    _personRelationshipController.dispose();
-    _personInterestsController.dispose();
-    _personNotesController.dispose();
-    _noteContentController.dispose();
+    _apiKeyController.dispose();
     super.dispose();
   }
 
-  void _addPerson() {
-    _personNameController.clear();
-    _personRelationshipController.clear();
-    _personInterestsController.clear();
-    _personNotesController.clear();
-    setState(() {
-      _isEditing = true;
-      _editingType = 'person';
-      _editingIndex = null;
-    });
-  }
-
-  void _editPerson(int index) {
-    final person = _memories.people[index];
-    _personNameController.text = person.name;
-    _personRelationshipController.text = person.relationship;
-    _personInterestsController.text = person.interests ?? '';
-    _personNotesController.text = person.notes.join(', ');
-    setState(() {
-      _isEditing = true;
-      _editingType = 'person';
-      _editingIndex = index;
-    });
-  }
-
-  void _savePerson() {
-    final name = _personNameController.text.trim();
-    if (name.isEmpty) {
-      TopNotification.show(context, message: 'Name is required', backgroundColor: AppColors.danger);
-      return;
+  Future<void> _loadSettings() async {
+    final voiceTimeout = await LocalCacheService.loadVoiceIdleTimeout();
+    final cachedKey = await LocalCacheService.loadOpenAIApiKey();
+    if (mounted) {
+      setState(() {
+        _voiceIdleTimeout = voiceTimeout;
+        if (cachedKey != null && cachedKey.isNotEmpty) {
+          _localApiKeyCached = true;
+          _localApiKeyPrefix = cachedKey.length > 15
+              ? '${cachedKey.substring(0, 7)}...${cachedKey.substring(cachedKey.length - 4)}'
+              : '***';
+        }
+      });
     }
+  }
 
-    final notes = _personNotesController.text
-        .split(',')
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
+  void _setupListeners() {
+    widget.rosBridge.onApiKeyStatus = (status) {
+      if (mounted) {
+        setState(() {
+          _apiKeyIsSet = status['is_set'] as bool? ?? false;
+          _apiKeyPrefix = status['key_prefix'] as String? ?? '';
+        });
+      }
+    };
+  }
 
-    final person = KnownPerson(
-      name: name,
-      relationship: _personRelationshipController.text.trim(),
-      interests: _personInterestsController.text.trim().isEmpty ? null : _personInterestsController.text.trim(),
-      notes: notes,
-      lastSeen: DateTime.now(),
-    );
+  Future<void> _saveApiKey() async {
+    final key = _apiKeyController.text.trim();
+    if (key.isEmpty) return;
 
-    List<KnownPerson> updatedPeople;
-    if (_editingIndex != null) {
-      updatedPeople = List.from(_memories.people);
-      updatedPeople[_editingIndex!] = person;
-    } else {
-      updatedPeople = [..._memories.people, person];
+    setState(() => _isSavingKey = true);
+
+    // Save to robot (central storage)
+    widget.rosBridge.publishSaveApiKey(key);
+
+    // Also save locally and set voice services immediately
+    await LocalCacheService.saveOpenAIApiKey(key);
+    VoicePipelineService.setApiKey(key);
+    RealtimeVoiceService.setApiKey(key);
+
+    // Request status update from robot
+    widget.rosBridge.requestApiKeyStatus();
+
+    if (mounted) {
+      setState(() {
+        _isSavingKey = false;
+        _apiKeyController.clear();
+        _localApiKeyCached = true;
+        _localApiKeyPrefix = key.length > 15
+            ? '${key.substring(0, 7)}...${key.substring(key.length - 4)}'
+            : '***';
+      });
+
+      TopNotification.show(
+        context,
+        message: 'API key saved',
+        backgroundColor: AppColors.success,
+      );
     }
-
-    final updatedMemories = _memories.copyWith(people: updatedPeople);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-
-    setState(() {
-      _isEditing = false;
-      _editingType = '';
-      _editingIndex = null;
-    });
-
-    TopNotification.show(context, message: 'Person saved', backgroundColor: AppColors.success);
-  }
-
-  void _deletePerson(int index) {
-    final updatedPeople = List<KnownPerson>.from(_memories.people);
-    final name = updatedPeople[index].name;
-    updatedPeople.removeAt(index);
-
-    final updatedMemories = _memories.copyWith(people: updatedPeople);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-
-    TopNotification.show(context, message: '$name removed', backgroundColor: AppColors.warning);
-  }
-
-  void _addNote() {
-    _noteContentController.clear();
-    _noteCategory = 'general';
-    setState(() {
-      _isEditing = true;
-      _editingType = 'note';
-      _editingIndex = null;
-    });
-  }
-
-  void _saveNote() {
-    final content = _noteContentController.text.trim();
-    if (content.isEmpty) {
-      TopNotification.show(context, message: 'Note content is required', backgroundColor: AppColors.danger);
-      return;
-    }
-
-    final note = MemoryNote(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      content: content,
-      category: _noteCategory,
-    );
-
-    final updatedNotes = [..._memories.notes, note];
-    final updatedMemories = _memories.copyWith(notes: updatedNotes);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-
-    setState(() {
-      _isEditing = false;
-      _editingType = '';
-    });
-
-    TopNotification.show(context, message: 'Note added', backgroundColor: AppColors.success);
-  }
-
-  void _deleteNote(int index) {
-    final updatedNotes = List<MemoryNote>.from(_memories.notes);
-    updatedNotes.removeAt(index);
-
-    final updatedMemories = _memories.copyWith(notes: updatedNotes);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-
-    TopNotification.show(context, message: 'Note deleted', backgroundColor: AppColors.warning);
-  }
-
-  void _cancelEdit() {
-    setState(() {
-      _isEditing = false;
-      _editingType = '';
-      _editingIndex = null;
-    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isEditing) {
-      return _buildEditView();
-    }
-    return _buildListView();
-  }
-
-  Widget _buildListView() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(AppSpacing.lg),
+      padding: const EdgeInsets.only(
+        left: AppSpacing.lg,
+        right: AppSpacing.lg,
+        top: AppSpacing.xl,
+        bottom: AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header with connection status
-          Row(
+          // Voice section
+          const _SectionHeader(title: 'Voice'),
+          const SizedBox(height: AppSpacing.md),
+
+          _SettingsCard(
             children: [
-              const Icon(Icons.memory, color: AppColors.accent, size: 24),
-              const SizedBox(width: AppSpacing.sm),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Idle Timeout',
+                    style: TextStyle(color: AppColors.textPrimary),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: DropdownButton<int>(
+                      value: _voiceIdleTimeout,
+                      dropdownColor: AppColors.surface,
+                      underline: const SizedBox(),
+                      style: const TextStyle(color: AppColors.textPrimary),
+                      items: _timeoutOptions.map((seconds) {
+                        return DropdownMenuItem(
+                          value: seconds,
+                          child: Text(_timeoutLabels[seconds] ?? '$seconds sec'),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() => _voiceIdleTimeout = value);
+                          widget.rosBridge.publishVoiceIdleTimeout(value);
+                          LocalCacheService.saveVoiceIdleTimeout(value);
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
               const Text(
-                'Robot Memory',
-                style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              // Connection status indicator
-              Icon(
-                _isConnected ? Icons.cloud_done : Icons.cloud_off,
-                color: _isConnected ? AppColors.success : AppColors.textMuted,
-                size: 18,
-              ),
-              const SizedBox(width: AppSpacing.xs),
-              Text(
-                _isConnected ? 'Connected' : 'Offline',
-                style: TextStyle(
-                  color: _isConnected ? AppColors.success : AppColors.textMuted,
-                  fontSize: 12,
-                ),
+                'How long to wait for user speech before auto-pausing conversation.',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
               ),
             ],
           ),
-          const SizedBox(height: AppSpacing.sm),
-          const Text(
-            'What the robot knows and remembers. The AI can update this during conversations.',
-            style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-          ),
 
           const SizedBox(height: AppSpacing.xl),
 
-          // Owner Notes Section (Add button only when connected)
-          _buildSectionHeader('Owner Notes', Icons.person, onAdd: _isConnected ? _addOwnerNote : null),
+          // API Keys section
+          const _SectionHeader(title: 'API Keys'),
           const SizedBox(height: AppSpacing.md),
-          if (_memories.owner.notes.isEmpty)
-            _buildEmptyState('No owner notes yet', 'Things the robot learns about you')
-          else
-            ..._memories.owner.notes.asMap().entries.map((e) => _buildOwnerNoteCard(e.key, e.value)),
 
-          const SizedBox(height: AppSpacing.xl),
-
-          // People Section (Add button only when connected)
-          _buildSectionHeader('People', Icons.people, onAdd: _isConnected ? _addPerson : null),
-          const SizedBox(height: AppSpacing.md),
-          if (_memories.people.isEmpty)
-            _buildEmptyState('No people remembered yet', 'The robot will learn names as it meets people')
-          else
-            ..._memories.people.asMap().entries.map((e) => _buildPersonCard(e.key, e.value)),
-
-          const SizedBox(height: AppSpacing.xl),
-
-          // Notes Section (Add button only when connected)
-          _buildSectionHeader('Notes', Icons.note, onAdd: _isConnected ? _addNote : null),
-          const SizedBox(height: AppSpacing.md),
-          if (_memories.notes.isEmpty)
-            _buildEmptyState('No notes yet', 'The robot will save observations and facts here')
-          else
-            ..._memories.notes.asMap().entries.map((e) => _buildNoteCard(e.key, e.value)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSectionHeader(String title, IconData icon, {VoidCallback? onAdd, String addLabel = 'Add'}) {
-    return Row(
-      children: [
-        Icon(icon, color: AppColors.textSecondary, size: 18),
-        const SizedBox(width: AppSpacing.sm),
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const Spacer(),
-        if (onAdd != null)
-          GestureDetector(
-            onTap: onAdd,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.xs),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(AppRadius.small),
-                border: Border.all(color: AppColors.accent),
+          _SettingsCard(
+            children: [
+              const Text(
+                'OpenAI API Key',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-              child: Text(
-                addLabel,
-                style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 12),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
+              const SizedBox(height: AppSpacing.sm),
 
-  Widget _buildEmptyState(String title, String subtitle) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.medium),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          Text(title, style: const TextStyle(color: AppColors.textMuted)),
-          const SizedBox(height: AppSpacing.xs),
-          Text(subtitle, style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildOwnerNoteCard(int index, String content) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.small),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              content,
-              style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-            ),
-          ),
-          // Only show delete button when connected
-          if (_isConnected)
-            GestureDetector(
-              onTap: () => _deleteOwnerNote(index),
-              child: const Icon(Icons.close, color: AppColors.textMuted, size: 18),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _addOwnerNote() {
-    _noteContentController.clear();
-    setState(() {
-      _isEditing = true;
-      _editingType = 'owner_note';
-    });
-  }
-
-  void _saveOwnerNote() {
-    final content = _noteContentController.text.trim();
-    if (content.isEmpty) return;
-
-    final updatedNotes = [..._memories.owner.notes, content];
-    final updatedOwner = _memories.owner.copyWith(notes: updatedNotes);
-    final updatedMemories = _memories.copyWith(owner: updatedOwner);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-
-    _noteContentController.clear();
-    setState(() {
-      _isEditing = false;
-      _editingType = '';
-    });
-  }
-
-  void _deleteOwnerNote(int index) {
-    final updatedNotes = List<String>.from(_memories.owner.notes);
-    updatedNotes.removeAt(index);
-    final updatedOwner = _memories.owner.copyWith(notes: updatedNotes);
-    final updatedMemories = _memories.copyWith(owner: updatedOwner);
-    widget.rosBridge.publishSaveMemories(updatedMemories);
-  }
-
-  Widget _buildPersonCard(int index, KnownPerson person) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.medium),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      person.name,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    if (person.relationship.isNotEmpty) ...[
-                      const SizedBox(width: AppSpacing.sm),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: AppColors.accent.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(AppRadius.small),
-                        ),
-                        child: Text(
-                          person.relationship,
-                          style: const TextStyle(color: AppColors.accent, fontSize: 11),
-                        ),
+              // Status indicator - show green if local cache has key
+              if (_localApiKeyCached)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.sm,
+                    vertical: AppSpacing.xs,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.check_circle, color: AppColors.success, size: 16),
+                      const SizedBox(width: AppSpacing.xs),
+                      Text(
+                        'Configured: $_localApiKeyPrefix',
+                        style: const TextStyle(color: AppColors.success, fontSize: 12),
                       ),
                     ],
-                  ],
-                ),
-                if (person.notes.isNotEmpty) ...[
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    person.notes.join('; '),
-                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                ],
-              ],
-            ),
-          ),
-          // Only show edit/delete buttons when connected
-          if (_isConnected) ...[
-            GestureDetector(
-              onTap: () => _editPerson(index),
-              child: const Padding(
-                padding: EdgeInsets.all(AppSpacing.sm),
-                child: Icon(Icons.edit, color: AppColors.textMuted, size: 18),
-              ),
-            ),
-            GestureDetector(
-              onTap: () => _deletePerson(index),
-              child: const Padding(
-                padding: EdgeInsets.all(AppSpacing.sm),
-                child: Icon(Icons.delete, color: AppColors.danger, size: 18),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNoteCard(int index, MemoryNote note) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.medium),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  note.content,
-                  style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  '${note.category} • ${_formatDate(note.createdAt)}',
-                  style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          // Only show delete button when connected
-          if (_isConnected)
-            GestureDetector(
-              onTap: () => _deleteNote(index),
-              child: const Padding(
-                padding: EdgeInsets.all(AppSpacing.sm),
-                child: Icon(Icons.delete, color: AppColors.danger, size: 18),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final diff = now.difference(date);
-    if (diff.inDays == 0) return 'Today';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7) return '${diff.inDays} days ago';
-    return '${date.month}/${date.day}/${date.year}';
-  }
-
-  Widget _buildEditView() {
-    switch (_editingType) {
-      case 'owner_note':
-        return _buildOwnerNoteEditView();
-      case 'person':
-        return _buildPersonEditView();
-      case 'note':
-        return _buildNoteEditView();
-      default:
-        return const SizedBox();
-    }
-  }
-
-  Widget _buildOwnerNoteEditView() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildEditHeader('Add Owner Note'),
-          const SizedBox(height: AppSpacing.lg),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              children: [
-                _buildTextField(_noteContentController, 'Note', 'Something about you to remember...', maxLines: 3),
-                const SizedBox(height: AppSpacing.xl),
-                _buildSaveButton(_saveOwnerNote),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPersonEditView() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildEditHeader(_editingIndex != null ? 'Edit Person' : 'Add Person'),
-          const SizedBox(height: AppSpacing.lg),
-          Container(
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              children: [
-                _buildTextField(_personNameController, 'Name', 'Person\'s name'),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(_personRelationshipController, 'Relationship', 'e.g., friend, coworker, family'),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(_personInterestsController, 'Interests', 'What they like'),
-                const SizedBox(height: AppSpacing.lg),
-                _buildTextField(_personNotesController, 'Notes', 'Comma-separated things to remember'),
-                const SizedBox(height: AppSpacing.xl),
-                _buildSaveButton(_savePerson),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNoteEditView() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildEditHeader('Add Note'),
-          const SizedBox(height: AppSpacing.lg),
-          Container(
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildTextField(_noteContentController, 'Note', 'What to remember', maxLines: 3),
-                const SizedBox(height: AppSpacing.lg),
-                const Text('Category', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
-                const SizedBox(height: AppSpacing.xs),
+                )
+              else
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(AppRadius.small),
-                    border: Border.all(color: AppColors.border),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.sm,
+                    vertical: AppSpacing.xs,
                   ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _noteCategory,
-                      isExpanded: true,
-                      dropdownColor: AppColors.surface,
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.warning_amber, color: AppColors.warning, size: 16),
+                      SizedBox(width: AppSpacing.xs),
+                      Text(
+                        'Not configured',
+                        style: TextStyle(color: AppColors.warning, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+
+              const SizedBox(height: AppSpacing.md),
+
+              // API key input
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _apiKeyController,
+                      obscureText: _obscureApiKey,
                       style: const TextStyle(color: AppColors.textPrimary),
-                      items: const [
-                        DropdownMenuItem(value: 'general', child: Text('General')),
-                        DropdownMenuItem(value: 'observation', child: Text('Observation')),
-                        DropdownMenuItem(value: 'preference', child: Text('Preference')),
-                        DropdownMenuItem(value: 'fact', child: Text('Fact')),
-                        DropdownMenuItem(value: 'event', child: Text('Event')),
-                      ],
-                      onChanged: (v) => setState(() => _noteCategory = v ?? 'general'),
+                      decoration: InputDecoration(
+                        hintText: _localApiKeyCached ? 'Enter new key to replace' : 'Enter API key (sk-...)',
+                        hintStyle: const TextStyle(color: AppColors.textMuted),
+                        filled: true,
+                        fillColor: AppColors.surface,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                          borderSide: const BorderSide(color: AppColors.border),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                          borderSide: const BorderSide(color: AppColors.border),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                          borderSide: const BorderSide(color: AppColors.accent),
+                        ),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscureApiKey ? Icons.visibility : Icons.visibility_off,
+                            color: AppColors.textMuted,
+                          ),
+                          onPressed: () => setState(() => _obscureApiKey = !_obscureApiKey),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: AppSpacing.xl),
-                _buildSaveButton(_saveNote),
-              ],
-            ),
+                  const SizedBox(width: AppSpacing.sm),
+                  GestureDetector(
+                    onTap: _isSavingKey ? null : _saveApiKey,
+                    child: Container(
+                      padding: const EdgeInsets.all(AppSpacing.md),
+                      decoration: BoxDecoration(
+                        color: _isSavingKey
+                            ? AppColors.surface
+                            : AppColors.accent.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                        border: Border.all(
+                          color: _isSavingKey ? AppColors.border : AppColors.accent,
+                        ),
+                      ),
+                      child: _isSavingKey
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppColors.accent,
+                              ),
+                            )
+                          : const Icon(Icons.save, color: AppColors.accent, size: 20),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: AppSpacing.sm),
+              const Text(
+                'Required for voice features. Key is stored securely on the robot.',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+            ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildEditHeader(String title) {
-    return Row(
-      children: [
-        const Icon(Icons.memory, color: AppColors.accent, size: 24),
-        const SizedBox(width: AppSpacing.sm),
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const Spacer(),
-        GestureDetector(
-          onTap: _cancelEdit,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-            decoration: BoxDecoration(
-              color: AppColors.danger.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(AppRadius.small),
-              border: Border.all(color: AppColors.dangerBright),
-            ),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.dangerBright, fontWeight: FontWeight.bold)),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTextField(TextEditingController controller, String label, String hint, {int maxLines = 1}) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
-        const SizedBox(height: AppSpacing.xs),
-        TextField(
-          controller: controller,
-          maxLines: maxLines,
-          style: const TextStyle(color: AppColors.textPrimary),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: AppColors.textMuted.withOpacity(0.5)),
-            filled: true,
-            fillColor: AppColors.background,
-            contentPadding: const EdgeInsets.all(AppSpacing.md),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadius.small),
-              borderSide: const BorderSide(color: AppColors.border),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadius.small),
-              borderSide: const BorderSide(color: AppColors.border),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadius.small),
-              borderSide: const BorderSide(color: AppColors.accent, width: 2),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSaveButton(VoidCallback onSave) {
-    return GestureDetector(
-      onTap: onSave,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
-        decoration: BoxDecoration(
-          color: AppColors.accent.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(AppRadius.small),
-          border: Border.all(color: AppColors.accent),
-        ),
-        child: const Center(
-          child: Text('Save', style: TextStyle(color: AppColors.accent, fontSize: 16, fontWeight: FontWeight.bold)),
-        ),
       ),
     );
   }

@@ -186,8 +186,8 @@ class _ControlBarState extends State<ControlBar> {
             padding: const EdgeInsets.only(
               left: AppSpacing.lg,
               right: AppSpacing.lg,
-              top: AppSpacing.md,
-              bottom: AppSpacing.lg,
+              top: AppSpacing.lg,
+              bottom: AppSpacing.md,
             ),
             decoration: BoxDecoration(
               color: const Color(0xFF2A2A2A),
@@ -203,37 +203,33 @@ class _ControlBarState extends State<ControlBar> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                // Wander button - orange when active
+                // Wander button
                 _ControlButton(
                   icon: _wanderActive ? Icons.explore_off : Icons.explore,
                   label: _wanderActive ? 'Stop' : 'Wander',
                   onTap: _handleWanderTap,
                   buttonColor: _wanderActive ? Colors.red : AppColors.dangerBright,
-                  isActive: _wanderActive,
                 ),
-                // Follow button - green when active
+                // Follow button
                 _ControlButton(
                   icon: _followActive ? Icons.person_off : Icons.person,
                   label: _followActive ? 'Stop' : 'Follow',
                   onTap: _handleFollowTap,
                   buttonColor: _followActive ? Colors.red : AppColors.success,
-                  isActive: _followActive,
                 ),
-                // Track button - blue (independent, not mutually exclusive)
+                // Track button
                 _ControlButton(
                   icon: _trackActive ? Icons.center_focus_weak : Icons.center_focus_strong,
                   label: _trackActive ? 'Stop' : 'Track',
                   onTap: _handleTrackTap,
                   buttonColor: _trackActive ? Colors.red : AppColors.accent,
-                  isActive: _trackActive,
                 ),
-                // Patrol button - orange when active
+                // Patrol button
                 _ControlButton(
                   icon: _patrolActive ? Icons.search_off : Icons.search,
                   label: _patrolActive ? 'Stop' : 'Patrol',
                   onTap: _handlePatrolTap,
                   buttonColor: _patrolActive ? Colors.red : AppColors.dangerBright,
-                  isActive: _patrolActive,
                 ),
               ],
             ),
@@ -316,14 +312,12 @@ class _ControlButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final Color buttonColor;
-  final bool isActive;
 
   const _ControlButton({
     required this.icon,
     required this.label,
     required this.onTap,
     required this.buttonColor,
-    this.isActive = false,
   });
 
   @override
@@ -339,9 +333,6 @@ class _ControlButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: buttonColor,
               shape: BoxShape.circle,
-              border: isActive
-                  ? Border.all(color: Colors.white, width: 2)
-                  : null,
             ),
             child: Icon(
               icon,

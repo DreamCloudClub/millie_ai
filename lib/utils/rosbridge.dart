@@ -718,6 +718,7 @@ class RosBridge {
   void Function()? onWanderStop;   // When controller requests silent wander mode stop
   void Function()? onRefresh; // When controller requests AI context refresh
   void Function(String)? onSpeakCommand;  // When controller sends text for robot to speak
+  void Function(int)? onVoiceIdleTimeout;  // When controller sets voice idle timeout
   void Function(String)? onMotionDetectorStatus;  // Motion detector status changes (approaching, lost, etc.)
   void Function(Map<String, dynamic>)? onPersonStatus;  // Person detection status from camera (JSON with distance, confidence, etc.)
   void Function(Map<String, dynamic>)? onFollowingModeStatus;  // Following mode status (disabled, tracking, approaching, arrived, lost, searching)
@@ -727,6 +728,8 @@ class RosBridge {
   void Function(List<SavedSequence>)? onSequencesUpdate;
   void Function(List<ActionDefinition>)? onActionsUpdate;
   void Function(List<AgentDefinition>)? onAgentsUpdate;
+  void Function(String key)? onApiKeyReceived;
+  void Function(Map<String, dynamic> status)? onApiKeyStatus;
   
   // Map callback with caching (map is latched, only sent once)
   void Function(MapData)? _onMapUpdate;
@@ -854,6 +857,9 @@ class RosBridge {
       // Subscribe to speak command from controller (robot speaks text)
       _subscribe('/millie/speak', 'std_msgs/msg/String');
 
+      // Subscribe to voice idle timeout setting from controller
+      _subscribe('/millie/voice_idle_timeout', 'std_msgs/msg/Int32');
+
       // Subscribe to motion detector status (for AI prompts in explore mode)
       _subscribe('/motion_detector/status', 'std_msgs/msg/String');
 
@@ -867,11 +873,23 @@ class RosBridge {
       // Subscribe to limiter status (blocked by obstacle)
       _subscribe('/limiter/status', 'std_msgs/msg/String');
 
+      // Subscribe to API key topics
+      _subscribe('/millie/api_key', 'std_msgs/msg/String');
+      _subscribe('/millie/api_key/status', 'std_msgs/msg/String');
+
+      // Request API key from robot on connect (for voice services)
+      Future.delayed(const Duration(milliseconds: 500), () {
+        requestApiKey();
+      });
+
       // Subscribe to map with TRANSIENT_LOCAL QoS to receive latched map
       _subscribeWithQos('/map', 'nav_msgs/msg/OccupancyGrid', durability: 'transient_local');
       
       // Subscribe to Nav2 action status for navigation complete notifications
       _subscribe('/navigate_to_pose/_action/status', 'action_msgs/msg/GoalStatusArray');
+
+      // Subscribe to nav_command_node's unified nav status (works for both direct and lane navigation)
+      _subscribe('/millie/nav/status', 'std_msgs/msg/String');
       
       // Laser scan disabled - needs TF sync for proper display
       // _subscribeThrottled('/scan_filtered', 'sensor_msgs/msg/LaserScan', 500);
@@ -981,10 +999,14 @@ class RosBridge {
           _handleRefreshMessage();
         } else if (topic == '/millie/speak') {
           _handleSpeakMessage(msg['msg']);
+        } else if (topic == '/millie/voice_idle_timeout') {
+          _handleVoiceIdleTimeout(msg['msg']);
         } else if (topic == '/map') {
           _handleMapMessage(msg['msg']);
         } else if (topic == '/navigate_to_pose/_action/status') {
           _handleNavStatusMessage(msg['msg']);
+        } else if (topic == '/millie/nav/status') {
+          _handleMillieNavStatus(msg['msg']);
         } else if (topic == '/scan_filtered') {
           _handleLaserScanMessage(msg['msg']);
         } else if (topic == '/motion_detector/status') {
@@ -997,6 +1019,10 @@ class RosBridge {
           _handleWanderStatus(msg['msg']);
         } else if (topic == '/limiter/status') {
           _handleLimiterStatus(msg['msg']);
+        } else if (topic == '/millie/api_key') {
+          _handleApiKeyMessage(msg['msg']);
+        } else if (topic == '/millie/api_key/status') {
+          _handleApiKeyStatus(msg['msg']);
         }
       }
     } catch (e) {
@@ -1056,6 +1082,32 @@ class RosBridge {
     if (status.isNotEmpty) {
       print("🚧 [RosBridge] Limiter: $status");
       onLimiterStatus?.call(status);
+    }
+  }
+
+  void _handleApiKeyMessage(Map<String, dynamic> msg) {
+    final key = msg['data'] as String? ?? '';
+    if (key.isNotEmpty) {
+      final prefix = key.length > 15 ? '${key.substring(0, 7)}...${key.substring(key.length - 4)}' : '***';
+      print("🔑 [RosBridge] API key received: $prefix - saving locally");
+      // Auto-save to local cache
+      LocalCacheService.saveOpenAIApiKey(key);
+      onApiKeyReceived?.call(key);
+    }
+  }
+
+  void _handleApiKeyStatus(Map<String, dynamic> msg) {
+    final data = msg['data'] as String? ?? '';
+    if (data.isNotEmpty) {
+      try {
+        final status = jsonDecode(data) as Map<String, dynamic>;
+        final isSet = status['is_set'] as bool? ?? false;
+        final prefix = status['key_prefix'] as String? ?? '';
+        print("🔑 [RosBridge] API key status: isSet=$isSet, prefix=$prefix");
+        onApiKeyStatus?.call(status);
+      } catch (e) {
+        print("⚠️ Error parsing API key status: $e");
+      }
     }
   }
   
@@ -1206,6 +1258,12 @@ class RosBridge {
       print("🔊 Speak command from controller: $text");
       onSpeakCommand?.call(text);
     }
+  }
+
+  void _handleVoiceIdleTimeout(Map<String, dynamic> msg) {
+    final seconds = msg['data'] as int? ?? 60;
+    print("⏱️ Voice idle timeout set: ${seconds}s");
+    onVoiceIdleTimeout?.call(seconds);
   }
 
   void _handleWaypointsMessage(Map<String, dynamic> msg) {
@@ -1522,6 +1580,52 @@ class RosBridge {
     }
   }
 
+  /// Handle nav status from nav_command_node (works for both direct and lane navigation)
+  void _handleMillieNavStatus(Map<String, dynamic> msg) {
+    try {
+      final statusStr = msg['data'] as String? ?? '';
+      if (statusStr.isEmpty) return;
+
+      // Convert string status to NavStatus enum
+      NavStatus newStatus;
+      switch (statusStr) {
+        case 'succeeded':
+          newStatus = NavStatus.succeeded;
+          break;
+        case 'failed':
+          newStatus = NavStatus.failed;
+          break;
+        case 'canceled':
+          newStatus = NavStatus.canceled;
+          break;
+        case 'navigating':
+          newStatus = NavStatus.executing;
+          break;
+        case 'idle':
+          newStatus = NavStatus.idle;
+          break;
+        default:
+          return; // Unknown status, ignore
+      }
+
+      // Only notify on meaningful state changes (not executing or idle)
+      if (newStatus != _lastNavStatus && newStatus != NavStatus.executing && newStatus != NavStatus.idle) {
+        print("🎯 Millie nav status: $newStatus, notifying ${_navStatusListeners.length} listeners");
+
+        // Notify multi-listeners
+        for (final listener in _navStatusListeners) {
+          listener(newStatus);
+        }
+
+        // Legacy callback (backward compatibility)
+        onNavStatusUpdate?.call(newStatus);
+      }
+      _lastNavStatus = newStatus;
+    } catch (e) {
+      print("⚠️ Error parsing millie nav status: $e");
+    }
+  }
+
   void publishCmdVel(double x, double y) {
     if (_channel == null || !_connected) {
       return; // Silent - joystick sends many messages
@@ -1543,6 +1647,31 @@ class RosBridge {
     };
 
     _channel!.sink.add(jsonEncode(msg));
+  }
+
+  /// Publish direct velocity command for fidget movements
+  /// linear: forward (+) / backward (-) velocity in m/s
+  /// angular: counter-clockwise (+) / clockwise (-) velocity in rad/s
+  void publishVelocity({double linear = 0.0, double angular = 0.0}) {
+    if (_channel == null || !_connected) {
+      return;
+    }
+
+    final msg = {
+      "op": "publish",
+      "topic": "/cmd_vel",
+      "msg": {
+        "linear": {"x": linear, "y": 0.0, "z": 0.0},
+        "angular": {"x": 0.0, "y": 0.0, "z": angular}
+      }
+    };
+
+    _channel!.sink.add(jsonEncode(msg));
+  }
+
+  /// Stop all movement
+  void stopMovement() {
+    publishVelocity(linear: 0.0, angular: 0.0);
   }
   
   /// Send a navigation goal to Nav2
@@ -1831,26 +1960,63 @@ class RosBridge {
     _publishSimple("/millie/memories/list", "");
   }
 
+  /// Save API key to robot
+  void publishSaveApiKey(String apiKey) {
+    _publishSimple("/millie/api_key/save", apiKey);
+  }
+
+  /// Request API key status from robot
+  void requestApiKeyStatus() {
+    _publishSimple("/millie/api_key/request", "status");
+  }
+
+  /// Request actual API key from robot (for voice services)
+  void requestApiKey() {
+    print("🔑 [RosBridge] Requesting API key from robot...");
+    _publishSimple("/millie/api_key/request", "key");
+  }
+
+  /// Publish voice idle timeout setting
+  void publishVoiceIdleTimeout(int seconds) {
+    if (_channel == null) return;
+    final msg = {
+      "op": "publish",
+      "topic": "/millie/voice_idle_timeout",
+      "msg": {"data": seconds}
+    };
+    _channel!.sink.add(jsonEncode(msg));
+    print("⏱️ Published voice idle timeout: ${seconds}s");
+  }
+
   /// Cancel current navigation - calls Nav2 cancel service directly
   void publishCancelNav() {
     if (!_connected || _channel == null) return;
-    
-    // Call the Nav2 action cancel service directly via rosbridge
-    // UUID of all zeros = cancel ALL active goals
-    final cancelMsg = {
+
+    // Cancel args - UUID of all zeros = cancel ALL active goals
+    final cancelArgs = {
+      "goal_info": {
+        "goal_id": {"uuid": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]},
+        "stamp": {"sec": 0, "nanosec": 0}
+      }
+    };
+
+    // Cancel NavigateToPose action
+    _channel!.sink.add(jsonEncode({
       "op": "call_service",
       "service": "/navigate_to_pose/_action/cancel_goal",
       "type": "action_msgs/srv/CancelGoal",
-      "args": {
-        "goal_info": {
-          "goal_id": {"uuid": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]},
-          "stamp": {"sec": 0, "nanosec": 0}
-        }
-      }
-    };
-    _channel!.sink.add(jsonEncode(cancelMsg));
-    
-    print("🛑 Cancelling navigation");
+      "args": cancelArgs
+    }));
+
+    // Cancel NavigateThroughPoses action (used for lane navigation)
+    _channel!.sink.add(jsonEncode({
+      "op": "call_service",
+      "service": "/navigate_through_poses/_action/cancel_goal",
+      "type": "action_msgs/srv/CancelGoal",
+      "args": cancelArgs
+    }));
+
+    print("🛑 Cancelling navigation (both actions)");
   }
   
   /// Emergency stop - cancel ALL autonomous movement
