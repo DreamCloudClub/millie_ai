@@ -137,14 +137,14 @@ class ReminderSchedulerService {
   /// Build the spoken announcement message
   String _buildAnnouncementMessage(Reminder reminder) {
     final timeStr = _formatTime(reminder.scheduledAt);
-    final title = reminder.title.toLowerCase();
+    final title = reminder.title;
 
-    String message = "Hey $_username, it's $timeStr. Time to $title";
+    String message = "Reminder: $title. It's $timeStr";
 
     // Add notes if present
     final notes = reminder.metadata?['notes'] as String?;
     if (notes != null && notes.isNotEmpty) {
-      message += ". Don't forget: ${notes.toLowerCase()}";
+      message += ". $notes";
     }
 
     return message;
