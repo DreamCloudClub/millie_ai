@@ -26,6 +26,11 @@ class FacePage extends StatefulWidget {
   final VoidCallback? onRefresh;
   final VoidCallback? onNavigateLeft;   // Navigate to previous page (Chat)
   final VoidCallback? onNavigateRight;  // Navigate to next page (Notes)
+  final VoidCallback? onSearchStart;
+  final VoidCallback? onSearchStop;
+  final bool isSearchActive;
+  final String? searchTarget;
+  final int searchCoverage;
   final String faceId;
   const FacePage({
     super.key,
@@ -36,6 +41,11 @@ class FacePage extends StatefulWidget {
     this.onRefresh,
     this.onNavigateLeft,
     this.onNavigateRight,
+    this.onSearchStart,
+    this.onSearchStop,
+    this.isSearchActive = false,
+    this.searchTarget,
+    this.searchCoverage = 0,
     this.faceId = '',
   });
 
@@ -419,9 +429,8 @@ class FacePageState extends State<FacePage>
       _isListening = listening;
       if (listening) {
         _statusText = 'Listening...';
-      } else if (!_speaking && !_isProcessing) {
-        _statusText = 'Ready';
       }
+      // Don't set Ready here - only setIdle(true) should show Ready
     });
   }
 
@@ -607,6 +616,11 @@ class FacePageState extends State<FacePage>
                     isPaused: _isPaused,
                     isSleeping: _isSleeping,
                     isIdle: _isIdle,
+                    onSearchStart: widget.onSearchStart,
+                    onSearchStop: widget.onSearchStop,
+                    isSearchActive: widget.isSearchActive,
+                    searchTarget: widget.searchTarget,
+                    searchCoverage: widget.searchCoverage,
                   ),
                 ],
               ),

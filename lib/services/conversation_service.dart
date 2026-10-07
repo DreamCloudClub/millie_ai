@@ -11,6 +11,7 @@ import 'reminder_service.dart';
 import 'local_cache_service.dart';
 import 'consciousness_service.dart';
 import 'fidget_service.dart';
+import 'planned_search_service.dart';
 
 /// Conversation states
 enum ConversationState {
@@ -96,14 +97,69 @@ class ConversationService extends ChangeNotifier {
     debugPrint('📝 [ConversationService] Notes tools enabled');
   }
 
-  // Mode states (mutually exclusive: Wander, Follow, Patrol)
-  bool _wanderOnlyActive = false;   // Wander mode: wander only, AI stays active
-  bool _patrolModeActive = false;   // Patrol mode: wander + person detection
-  bool _wasPatrollingBeforeConversation = false;
-  bool _conversationPausedForPatrol = false;  // True if we paused an active conversation to patrol
+  // Planned search service reference
+  PlannedSearchService? _plannedSearchService;
+
+  /// Set the planned search service for object search
+  void setPlannedSearchService(PlannedSearchService service) {
+    _plannedSearchService = service;
+    _workflowTools.plannedSearchService = service;
+
+    // Search callbacks inject prompts - AI speaks
+    service.onProgress = (message) {
+      debugPrint('🔍 [ConversationService] Search progress: $message');
+    };
+
+    service.onTargetPendingVerification = (target, location, confidence, scene) {
+      debugPrint('🔍 [ConversationService] Target pending verification: $target');
+      injectPrompt('You see something that might be the $target. Ask the user if this is it.');
+    };
+
+    service.onTargetConfirmed = (target, location) {
+      debugPrint('🎯 [ConversationService] Target confirmed: $target');
+      injectPrompt('The user confirmed you found the $target. Celebrate briefly.');
+    };
+
+    service.onError = (error) {
+      debugPrint('🔍 [ConversationService] Search error: $error');
+      injectPrompt('Search had an issue: $error. Let the user know briefly.');
+    };
+
+    service.onSearchEnd = () {
+      debugPrint('🔍 [ConversationService] Search ended');
+      _workflowTools.resumeWanderAfterSearch();
+      _updateFidgetState();
+    };
+
+    debugPrint('🔍 [ConversationService] Planned search service connected');
+  }
+
+  // Mode states (mutually exclusive: Wander, Follow)
+  bool _wanderActive = false;   // Wander mode: wander only, AI stays active
+  bool _conversationPausedForGoAway = false;  // True if we paused an active conversation to go away
 
   // Approach user state
   bool _approachingUser = false;
+
+  // Navigation state
+  bool _isNavigating = false;
+
+  /// Check if robot is in any movement mode (no fidget during these)
+  bool get _isInMovementMode {
+    return _wanderActive ||
+           _approachingUser ||
+           _isNavigating ||
+           (_plannedSearchService?.isSearching ?? false);
+  }
+
+  /// Update fidget state based on movement modes
+  void _updateFidgetState() {
+    if (_isInMovementMode) {
+      _fidgetService.stop();
+    } else {
+      _fidgetService.start();
+    }
+  }
 
   // Track which pipeline is active
   String _activeVoiceMode = 'turn_taking';
@@ -136,6 +192,8 @@ class ConversationService extends ChangeNotifier {
   String? _pendingArrivalMessage;
   bool _pausedForTask = false;
 
+  // Search target capture - bypass AI tool calling
+  bool _waitingForSearchTarget = false;
 
   // Callbacks for UI updates
   void Function(bool speaking)? onSpeakingChange;
@@ -146,7 +204,7 @@ class ConversationService extends ChangeNotifier {
   void Function()? onPauseRequested;  // Called when user says "pause"
 
   // Activity log callbacks (legacy - still used for chaining)
-  void Function(String event)? onMovementEvent;  // Wander, patrol, navigation
+  void Function(String event)? onMovementEvent;  // Wander, navigation
   void Function(String event)? onToolEvent;      // Workflow, memory, tasks
   void Function(String page)? onShowPage;        // Navigate to a page (face, dashboard, notes, schedule)
   void Function(String noteId)? onOpenNote;      // Open a specific note by ID
@@ -214,8 +272,14 @@ class ConversationService extends ChangeNotifier {
     if (cachedApiKey != null && cachedApiKey.isNotEmpty) {
       VoicePipelineService.setApiKey(cachedApiKey);
       RealtimeVoiceService.setApiKey(cachedApiKey);
+      WorkflowTools.setApiKey(cachedApiKey);
       debugPrint('🔑 [ConversationService] Loaded cached API key');
     }
+
+    // Wire up LiDAR data to WorkflowTools for vision
+    rosBridge.addLaserScanListener((scan) {
+      _workflowTools.updateLaserScan(scan);
+    });
   }
   
   void _setupTurnTakingCallbacks() {
@@ -244,6 +308,9 @@ class ConversationService extends ChangeNotifier {
       addActivity(text, type: ActivityType.user);
       // Record for consciousness
       _consciousnessService?.recordUserMessage(text);
+
+      // Search handled by AI via tools (start_search, confirm_search_target, reject_search_target)
+      // No interception - AI responds naturally with one voice
     };
 
     _turnTakingPipeline.onResponse = (text) {
@@ -362,10 +429,6 @@ class ConversationService extends ChangeNotifier {
     // End consciousness session (runs AI reflection in background)
     _consciousnessService?.endSession();
 
-    // Check if we should resume patrol mode
-    final shouldResumePatrol = _wasPatrollingBeforeConversation;
-    _wasPatrollingBeforeConversation = false;
-
     // Check if this was a temp action
     final wasTempAction = _currentAction != null && _tempActions.containsKey(_currentAction!.name);
 
@@ -381,12 +444,6 @@ class ConversationService extends ChangeNotifier {
     Future.delayed(const Duration(milliseconds: 500), () {
       _reset();
       debugPrint('🔄 Conversation reset - ready for next action');
-
-      // Resume patrol mode if we were patrolling before
-      if (shouldResumePatrol) {
-        debugPrint('🔍 Resuming patrol mode');
-        startPatrolMode();
-      }
     });
   }
   
@@ -448,6 +505,7 @@ class ConversationService extends ChangeNotifier {
     if (key.isNotEmpty) {
       VoicePipelineService.setApiKey(key);
       RealtimeVoiceService.setApiKey(key);
+      WorkflowTools.setApiKey(key);
       LocalCacheService.saveOpenAIApiKey(key);
       debugPrint('🔑 [ConversationService] API key received and cached');
     }
@@ -490,6 +548,104 @@ class ConversationService extends ChangeNotifier {
     _realtimePipeline.setIdleTimeout(seconds);
     // Cache locally so it persists
     LocalCacheService.saveVoiceIdleTimeout(seconds);
+  }
+
+  // ===========================================================================
+  // SEARCH TARGET CAPTURE (bypasses AI tool calling)
+  // ===========================================================================
+
+  /// Set flag to capture next user speech as search target
+  void setWaitingForSearchTarget(bool waiting) {
+    _waitingForSearchTarget = waiting;
+    debugPrint('🔍 [ConversationService] Waiting for search target: $waiting');
+  }
+
+  /// Speak a prompt and listen for response
+  void speakAndListen(String prompt) {
+    debugPrint('🔍 [ConversationService] Speaking and listening: $prompt');
+
+    // Make sure conversation is active
+    if (!isActive) {
+      startDefaultConversation(withIntro: false);
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _turnTakingPipeline.speakText(prompt);
+      });
+    } else {
+      _turnTakingPipeline.speakText(prompt);
+    }
+  }
+
+  /// Extract search target from voice command, or null if not a search command
+  String? _extractSearchTarget(String text) {
+    final lower = text.toLowerCase();
+
+    // Patterns: "find my keys", "search for the remote", "look for my phone", "where is my wallet"
+    final patterns = [
+      RegExp(r"(?:find|search for|look for|looking for)\s+(?:my\s+|the\s+|a\s+)?(.+)", caseSensitive: false),
+      RegExp(r"(?:where(?:'s| is| are))\s+(?:my\s+|the\s+)?(.+)", caseSensitive: false),
+      RegExp(r"(?:can you find|help me find)\s+(?:my\s+|the\s+|a\s+)?(.+)", caseSensitive: false),
+    ];
+
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(lower);
+      if (match != null && match.group(1) != null) {
+        final target = match.group(1)!.trim();
+        // Filter out non-search phrases
+        if (target.isNotEmpty &&
+            !target.contains('way') &&  // "find a way"
+            !target.contains('out') &&  // "find out"
+            target.length < 50) {
+          debugPrint('🔍 [ConversationService] Detected search command: "$target"');
+          return target;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Check if response is affirmative (yes, yeah, correct, etc.)
+  bool _isAffirmative(String text) {
+    final affirmatives = [
+      'yes', 'yeah', 'yep', 'yup', 'correct', 'right', 'that\'s it',
+      'thats it', 'that is it', 'found it', 'you found it', 'perfect',
+      'exactly', 'bingo', 'affirmative', 'confirmed', 'sure', 'ok', 'okay',
+    ];
+    for (final word in affirmatives) {
+      if (text.contains(word)) return true;
+    }
+    return false;
+  }
+
+  /// Check if response is negative (no, nope, wrong, etc.)
+  bool _isNegative(String text) {
+    final negatives = [
+      'no', 'nope', 'nah', 'wrong', 'not it', 'that\'s not', 'thats not',
+      'incorrect', 'keep looking', 'continue', 'keep searching', 'try again',
+      'negative', 'not the', 'different',
+    ];
+    for (final word in negatives) {
+      if (text.contains(word)) return true;
+    }
+    return false;
+  }
+
+  /// Start search directly with captured target (bypasses AI)
+  void _startSearchWithTarget(String target) {
+    debugPrint('🔍 [ConversationService] Starting search for: "$target"');
+
+    if (_plannedSearchService == null) {
+      debugPrint('🔍 [ConversationService] No search service!');
+      return;
+    }
+
+    // Stop fidget - search is a movement mode
+    _updateFidgetState();
+
+    // Inject prompt so AI acknowledges the search
+    injectPrompt('User asked you to find "$target". Briefly acknowledge and say you\'re looking.');
+
+    // Start the search
+    _plannedSearchService!.startSearch(target);
   }
 
   /// Resume AI silently (no "I'm back" intro)
@@ -543,15 +699,6 @@ class ConversationService extends ChangeNotifier {
       _approachingUser = false;
       rosBridge.publishPersonFollowerDisable();
       // Don't return - let the status change prompt be injected if active
-    }
-
-    // In patrol mode: trigger conversation when person detected within 3m
-    if (_patrolModeActive && personDetected && !wasDetected) {
-      if (distance != null && distance <= 3.0) {
-        debugPrint('👤 Person detected at ${distance}m during patrol - starting conversation');
-        _startConversationFromPatrol();
-        return;
-      }
     }
 
     // Only inject prompts during active conversation
@@ -610,22 +757,11 @@ class ConversationService extends ChangeNotifier {
 
     _workflowTools.onWanderModeStop = () {
       debugPrint('🛑 Wander mode stop requested');
-      stopWanderOnly();
-    };
-
-    // Patrol mode callbacks (wander + person detection)
-    _workflowTools.onPatrolModeStart = () {
-      debugPrint('🔍 Patrol mode start requested');
-      startPatrolMode();
-    };
-
-    _workflowTools.onPatrolModeStop = () {
-      debugPrint('🛑 Patrol mode stop requested');
-      stopPatrolMode();
+      stopWander();
     };
 
     _workflowTools.onGoAwayRequested = () {
-      debugPrint('👋 Go away requested - pausing conversation for patrol');
+      debugPrint('👋 Go away requested - pausing conversation for wander');
 
       // Pause the conversation (keep session alive) instead of stopping
       if (_activeVoiceMode == 'realtime') {
@@ -633,10 +769,10 @@ class ConversationService extends ChangeNotifier {
       } else {
         _turnTakingPipeline.pause();
       }
-      _conversationPausedForPatrol = true;
+      _conversationPausedForGoAway = true;
 
-      // Start patrol mode (wander + person detection + sound detection)
-      startPatrolMode();
+      // Start wander mode
+      startWander();
     };
 
     _workflowTools.onApproachUserRequested = () {
@@ -709,23 +845,23 @@ class ConversationService extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // WANDER MODE: Wander only, AI stays active, robot keeps moving while talking
+  // WANDER MODE: Simple free roaming, AI stays active
   // ===========================================================================
 
-  /// Start wander mode - wander only, no person detection, AI stays active
+  /// Start wander mode - simple free roaming, AI stays active
   /// Robot can talk while moving - does NOT pause for conversation
-  Future<void> startWanderOnly() async {
-    debugPrint('🚶 Starting wander mode (wander only, AI active)');
+  Future<void> startWander() async {
+    debugPrint('🚶 Starting wander mode');
 
-    // Stop other modes first (mutual exclusivity)
-    if (_patrolModeActive) {
-      await stopPatrolMode();
-    }
+    _wanderActive = true;
+    _updateFidgetState();  // Stop fidget during movement
 
-    _wanderOnlyActive = true;
-
-    // Enable wander only (no person follower)
+    // Enable wander
     rosBridge.activateWanderMode();
+
+    // Immediately update WorkflowTools so it knows wander is active
+    // (don't wait for ROSBridge callback which may have delay)
+    _workflowTools.updateWanderStatus(status: 'enabled');
 
     // AI stays active - no changes to conversation state
     debugPrint('✅ Wander mode active - AI can still talk');
@@ -734,9 +870,16 @@ class ConversationService extends ChangeNotifier {
   }
 
   /// Stop wander mode
-  Future<void> stopWanderOnly() async {
+  Future<void> stopWander() async {
     debugPrint('🛑 Stopping wander mode');
-    _wanderOnlyActive = false;
+    _wanderActive = false;
+    _updateFidgetState();  // May resume fidget if no other movement
+
+    // Immediately update WorkflowTools
+    _workflowTools.updateWanderStatus(status: 'disabled');
+
+    // Note: Don't stop search here - search is independent and pauses wander itself
+    // If user wants to stop search, they say "stop searching"
 
     // Disable wander
     rosBridge.deactivateWanderMode();
@@ -744,77 +887,12 @@ class ConversationService extends ChangeNotifier {
     addActivity('Wander mode stopped', type: ActivityType.movement);
   }
 
-  bool get isWanderOnlyActive => _wanderOnlyActive;
+  bool get isWanderActive => _wanderActive;
 
-  // ===========================================================================
-  // PATROL MODE: Wander + person detection, auto-engage on detection
-  // ===========================================================================
-
-  /// Start patrol mode - wander + person detection, auto-engage on detection
-  Future<void> startPatrolMode() async {
-    debugPrint('🔍 Starting patrol mode (wander + person detection)');
-
-    // Stop other modes first (mutual exclusivity)
-    if (_wanderOnlyActive) {
-      await stopWanderOnly();
-    }
-
-    _patrolModeActive = true;
-
-    // Enable wander and person follower
-    rosBridge.activatePatrolMode();
-
-    debugPrint('🔍 Patrol mode active - waiting for person detection');
-    onMovementEvent?.call('Patrol mode started');
-    addActivity('Patrol mode started', type: ActivityType.movement);
-  }
-
-  /// Stop patrol mode
-  Future<void> stopPatrolMode() async {
-    debugPrint('🛑 Stopping patrol mode');
-    _patrolModeActive = false;
-
-    // Disable wander and person follower
-    rosBridge.deactivatePatrolMode();
-    onMovementEvent?.call('Patrol mode stopped');
-    addActivity('Patrol mode stopped', type: ActivityType.movement);
-  }
-
-  bool get isPatrolModeActive => _patrolModeActive;
-
-  /// Called when person detection triggers conversation during patrol mode
-  void _startConversationFromPatrol() async {
-    // Remember we were patrolling (for resuming after conversation ends)
-    _wasPatrollingBeforeConversation = true;
-    _patrolModeActive = false;
-
-    // Wander pauses automatically when person_follower detects someone
-    // Person follower will approach and stop at follow distance
-
-    _approachingUser = true;
-    debugPrint('🚶 Person detected during patrol - starting conversation');
-
-    // Check if we have a paused conversation to resume
-    if (_conversationPausedForPatrol) {
-      debugPrint('🔄 Resuming paused conversation from patrol');
-      _conversationPausedForPatrol = false;
-      await resumeConversation();
-    } else {
-      // Start fresh conversation with greeting
-      debugPrint('🆕 Starting new conversation from patrol');
-      await startDefaultConversation(withIntro: true);
-    }
-  }
-
-  // Legacy getters for backward compatibility
-  @Deprecated('Use isPatrolModeActive instead')
-  bool get isSilentWanderActive => _patrolModeActive;
-
-  @Deprecated('Use startPatrolMode() instead')
-  Future<void> startSilentWander() => startPatrolMode();
-
-  @Deprecated('Use stopPatrolMode() instead')
-  Future<void> stopSilentWander() => stopPatrolMode();
+  // Legacy aliases for backward compatibility
+  Future<void> startWanderOnly() => startWander();
+  Future<void> stopWanderOnly() => stopWander();
+  bool get isWanderOnlyActive => _wanderActive;
 
   /// Stop whichever pipeline is currently active
   Future<void> _stopActivePipeline() async {
@@ -918,14 +996,13 @@ class ConversationService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Resume the conversation - AI speaks naturally then listens
+  /// Resume the conversation - just start listening (no AI intro)
   Future<void> resumeConversation() async {
     // Restart fidgeting when conversation resumes
     _fidgetService.start();
     if (_activeVoiceMode == 'realtime') {
       await _realtimePipeline.resume();
-      // Trigger AI to speak first after resume
-      _realtimePipeline.triggerResponse();
+      // Just resume listening - no AI intro
     } else {
       await _turnTakingPipeline.resumeWithResponse();
     }
@@ -961,11 +1038,15 @@ class ConversationService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Inject a prompt to make the AI respond (realtime mode only)
-  /// Used for motion detection, direction changes, etc.
+  /// Inject a prompt to make the AI respond
+  /// Used for search events, motion detection, direction changes, etc.
   void injectPrompt(String prompt) {
-    if (_activeVoiceMode == 'realtime' && _state != ConversationState.idle) {
+    if (_state == ConversationState.idle) return;
+
+    if (_activeVoiceMode == 'realtime') {
       _realtimePipeline.injectPrompt(prompt);
+    } else {
+      _turnTakingPipeline.injectPrompt(prompt);
     }
   }
 
@@ -1188,7 +1269,7 @@ class ConversationService extends ChangeNotifier {
 
     debugPrint('🗣️ Voice: $voice');
 
-    // Start the appropriate pipeline - AI speaks first naturally based on identity context
+    // Start the appropriate pipeline - just start listening, no intro
     if (_activeVoiceMode == 'realtime') {
       await _realtimePipeline.startConversation(
         systemPrompt: systemPrompt,
@@ -1346,20 +1427,8 @@ class ConversationService extends ChangeNotifier {
     onStateChange?.call(newState);  // Notify UI for face animations
     debugPrint('📍 Conversation state: ${newState.name}');
 
-    // Fidget: start when conversation starts, stop when it ends
-    switch (newState) {
-      case ConversationState.starting:
-      case ConversationState.listening:
-        _fidgetService.start();
-        break;
-      case ConversationState.idle:
-      case ConversationState.complete:
-      case ConversationState.cancelled:
-        _fidgetService.stop();
-        break;
-      default:
-        break;
-    }
+    // Fidget is controlled by movement state, not conversation state
+    // See _updateFidgetState() for movement-based control
 
     // Log meaningful state transitions to activity feed
     if (_lastLoggedState != newState) {
@@ -1393,7 +1462,7 @@ class ConversationService extends ChangeNotifier {
     _currentAction = null;
     _currentAgent = null;
     _actionCompleteHandled = false;
-    _conversationPausedForPatrol = false;
+    _conversationPausedForGoAway = false;
     _pendingArrivalMessage = null;
     _pausedForTask = false;
     _workflowTools.clear();

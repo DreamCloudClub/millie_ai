@@ -60,10 +60,20 @@ class RealtimeVoiceService {
   String _currentItemId = '';
   int _responseCount = 0;
 
-  // Idle timeout - longer to allow natural pauses in conversation
-  int _idleTimeoutSeconds = 60;
+  // Idle timeout - 1 hour to keep local listening active
+  int _idleTimeoutSeconds = 3600;
   Timer? _idleTimer;
   DateTime? _lastUserSpeechTime;
+
+  // Realtime connection idle timeout - disconnect WebSocket after 30s silence to save tokens
+  static const int _realtimeIdleTimeoutSeconds = 30;
+  Timer? _realtimeIdleTimer;
+
+  // Local VAD (voice activity detection) for gating realtime connection
+  static const double _speechAmplitudeThreshold = -25.0;  // dB threshold for speech
+  bool _localListeningActive = false;  // Local mic monitoring without WebSocket
+  bool _speechDetectedLocally = false;
+  StreamSubscription? _amplitudeSubscription;
 
   // Session config
   String _systemPrompt = '';
@@ -250,42 +260,35 @@ class RealtimeVoiceService {
     _audioChunkCount = 0;
 
     debugPrint('🎤 [Realtime] Starting conversation with voice: $voice');
-    _setState(RealtimeVoiceState.connecting);
 
-    try {
-      await _player.initialize();
+    // If greeting provided, connect immediately to speak it
+    // Otherwise, start local listening and wait for user to speak first
+    if (greeting != null && greeting.isNotEmpty) {
+      _setState(RealtimeVoiceState.connecting);
 
-      debugPrint('🔌 [Realtime] Connecting to WebSocket...');
-      await _connect();
-      debugPrint('🔌 [Realtime] Connected, configuring session...');
-
-      await _configureSession();
-      debugPrint('🔌 [Realtime] Session configured');
-
-      // If greeting provided, add it to conversation history
-      // Otherwise, trigger AI to speak first
-      if (greeting != null && greeting.isNotEmpty) {
+      try {
+        await _player.initialize();
+        await _connect();
+        await _configureSession();
         await _sendGreeting(greeting);
-      } else {
-        // No greeting - trigger AI to generate first message
-        debugPrint('🤖 [Realtime] No greeting - AI will speak first');
-        await _triggerAiFirstMessage();
+        await _startAudioStream();
+
+        _startIdleTimer();
+        _startRealtimeIdleTimer();
+        _interruptionController.markListening();
+        _setState(RealtimeVoiceState.listening);
+      } catch (e, stackTrace) {
+        debugPrint('❌ [Realtime] Connection error: $e');
+        debugPrint('❌ [Realtime] Stack trace: $stackTrace');
+        onError?.call('Failed to connect to Realtime API: $e');
+        _setState(RealtimeVoiceState.idle);
       }
-
-      // Start mic stream (but won't send audio until greeting finishes)
-      debugPrint('🎙️ [Realtime] Starting audio stream...');
-      await _startAudioStream();
-      debugPrint('🎙️ [Realtime] Audio stream started');
-
+    } else {
+      // No greeting - start local listening only (saves tokens until user speaks)
+      debugPrint('👂 [Realtime] No greeting - starting local listening (WebSocket connects on speech)');
       _startIdleTimer();
-
-      _interruptionController.markListening();
+      await _startLocalListening();
       _setState(RealtimeVoiceState.listening);
-    } catch (e, stackTrace) {
-      debugPrint('❌ [Realtime] Connection error: $e');
-      debugPrint('❌ [Realtime] Stack trace: $stackTrace');
-      onError?.call('Failed to connect to Realtime API: $e');
-      _setState(RealtimeVoiceState.idle);
     }
   }
 
@@ -605,12 +608,12 @@ class RealtimeVoiceService {
   }
 
   void _checkIdleTimeout() {
-    if (_lastUserSpeechTime == null || !_isConnected || _isPaused || _stopped) {
+    if (_lastUserSpeechTime == null || _isPaused || _stopped) {
       return;
     }
     final secondsSinceLastSpeech = DateTime.now().difference(_lastUserSpeechTime!).inSeconds;
     if (secondsSinceLastSpeech >= _idleTimeoutSeconds) {
-      debugPrint('⏱️ [Realtime] Idle timeout - pausing');
+      debugPrint('⏱️ [Realtime] Idle timeout (1hr) - pausing completely');
       _idleTimer?.cancel();
       pause();
       onPauseRequested?.call();
@@ -621,6 +624,163 @@ class RealtimeVoiceService {
     _lastUserSpeechTime = DateTime.now();
   }
 
+  /// Start realtime idle timer - disconnects WebSocket after 30s silence to save tokens
+  void _startRealtimeIdleTimer() {
+    _realtimeIdleTimer?.cancel();
+    _realtimeIdleTimer = Timer(const Duration(seconds: _realtimeIdleTimeoutSeconds), () {
+      if (_isConnected && !_player.isPlaying) {
+        debugPrint('⏱️ [Realtime] 30s silence - disconnecting WebSocket to save tokens');
+        _disconnectRealtimeOnly();
+      }
+    });
+  }
+
+  void _resetRealtimeIdleTimer() {
+    if (_isConnected) {
+      _startRealtimeIdleTimer();
+    }
+  }
+
+  /// Disconnect WebSocket but keep local listening active
+  Future<void> _disconnectRealtimeOnly() async {
+    if (!_isConnected) return;
+
+    debugPrint('🔌 [Realtime] Disconnecting WebSocket (keeping local listening)');
+
+    // Disconnect WebSocket
+    await _disconnect();
+
+    // Restart local listening (need to restart because stream subscription was tied to WebSocket)
+    await _stopLocalListening();
+    await _startLocalListening();
+
+    _setState(RealtimeVoiceState.listening);
+    debugPrint('👂 [Realtime] Local listening active - will reconnect on speech');
+  }
+
+  /// Start local-only listening with amplitude monitoring (no WebSocket)
+  Future<void> _startLocalListening() async {
+    if (_localListeningActive) return;
+
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      debugPrint('❌ [Realtime] Microphone permission denied');
+      return;
+    }
+
+    debugPrint('👂 [Realtime] Starting local listening with VAD');
+    _localListeningActive = true;
+    _speechDetectedLocally = false;
+
+    // Start recording for amplitude monitoring
+    final stream = await _recorder.startStream(
+      const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 24000,
+        numChannels: 1,
+        echoCancel: true,
+        noiseSuppress: true,
+        autoGain: true,
+      ),
+    );
+
+    // Brief delay to let mic settle before checking amplitude (prevents startup noise triggering)
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    // Check if we were stopped during the delay
+    if (!_localListeningActive || _isPaused || _stopped) {
+      debugPrint('👂 [Realtime] Local listening cancelled during startup delay');
+      return;
+    }
+
+    // Monitor amplitude locally - only connect to realtime when speech detected
+    _amplitudeSubscription?.cancel();
+    _amplitudeSubscription = Stream.periodic(const Duration(milliseconds: 100))
+        .asyncMap((_) async {
+          if (!_localListeningActive || _isPaused || _stopped) return null;
+          try {
+            return await _recorder.getAmplitude();
+          } catch (e) {
+            return null;
+          }
+        }).listen((amplitude) async {
+          if (amplitude == null || _isPaused || _stopped) return;
+
+          if (amplitude.current > _speechAmplitudeThreshold) {
+            if (!_speechDetectedLocally) {
+              _speechDetectedLocally = true;
+              debugPrint('🎤 [Realtime] Speech detected locally (${amplitude.current.toStringAsFixed(1)} dB)');
+
+              // Reset the 1hr idle timer - user is active
+              _resetIdleTimer();
+
+              // Connect to realtime if not connected
+              if (!_isConnected) {
+                await _connectAndStreamAudio();
+              }
+            }
+          } else {
+            _speechDetectedLocally = false;
+          }
+        });
+
+    // Also listen to the audio stream to forward to realtime when connected
+    _audioStreamSubscription?.cancel();
+    _audioStreamSubscription = stream.listen(
+      (data) {
+        if (!_isConnected || _isPaused || _stopped) return;
+        if (_player.isPlaying) return;
+        _sendAudioChunk(data);
+      },
+      onError: (error) {
+        debugPrint('❌ [Realtime] Audio stream error: $error');
+      },
+    );
+  }
+
+  /// Stop local listening
+  Future<void> _stopLocalListening() async {
+    _localListeningActive = false;
+    _amplitudeSubscription?.cancel();
+    _amplitudeSubscription = null;
+    await _audioStreamSubscription?.cancel();
+    _audioStreamSubscription = null;
+    try {
+      await _recorder.stop();
+    } catch (e) {
+      // May already be stopped
+    }
+  }
+
+  /// Connect to realtime API and start streaming (called when speech detected locally)
+  Future<void> _connectAndStreamAudio() async {
+    if (_isConnected) return;
+
+    debugPrint('🔌 [Realtime] Speech detected - connecting to realtime API');
+    _setState(RealtimeVoiceState.connecting);
+
+    try {
+      await _player.initialize();
+      await _connect();
+      await _configureSession();
+
+      // Restart local listening to re-establish the audio stream subscription
+      // This ensures audio is forwarded to the newly connected WebSocket
+      await _stopLocalListening();
+      await _startLocalListening();
+
+      _interruptionController.markListening();
+      _startRealtimeIdleTimer();
+      _setState(RealtimeVoiceState.listening);
+
+      debugPrint('✅ [Realtime] Connected and streaming');
+    } catch (e) {
+      debugPrint('❌ [Realtime] Failed to connect: $e');
+      onError?.call('Failed to connect: $e');
+      _setState(RealtimeVoiceState.listening);
+    }
+  }
+
   void _handleUserSpeechStarted() {
     // Ignore speech events while assistant is speaking - prevents false interruptions
     if (_player.isPlaying) {
@@ -628,6 +788,7 @@ class RealtimeVoiceService {
       return;
     }
     _resetIdleTimer();
+    _resetRealtimeIdleTimer();  // Reset 30s disconnect timer on speech
     _setState(RealtimeVoiceState.listening);
     _interruptionController.handleSpeechStarted();
   }
@@ -667,6 +828,7 @@ class RealtimeVoiceService {
     if (_player.isPlaying || _player.state == PlaybackState.starting) return;
 
     _setState(RealtimeVoiceState.speaking);
+    _idleTimer?.cancel(); // Stop idle timer while speaking
     onSpeaking?.call(true);
     _player.start(_audioBuffer);
   }
@@ -685,6 +847,8 @@ class RealtimeVoiceService {
 
     if (!_isPaused && !_stopped) {
       _restartAudioStream().then((_) {
+        _startIdleTimer(); // Restart 1hr idle timer
+        _startRealtimeIdleTimer(); // Start 30s WebSocket disconnect timer
         _setState(RealtimeVoiceState.listening);
         debugPrint('🎤 [Realtime] Ready for next input');
       });
@@ -693,17 +857,14 @@ class RealtimeVoiceService {
 
   Future<void> _restartAudioStream() async {
     debugPrint('🎙️ [Realtime] Restarting audio stream...');
-    await _audioStreamSubscription?.cancel();
-    _audioStreamSubscription = null;
 
-    try {
-      await _recorder.stop();
-    } catch (e) {
-      // May already be stopped
-    }
+    // Stop existing streams
+    await _stopLocalListening();
 
     _audioChunkCount = 0;
-    await _startAudioStream();
+
+    // Restart with local listening (which also sends audio when connected)
+    await _startLocalListening();
   }
 
   Future<void> _handleFunctionCall(Map<String, dynamic> message) async {
@@ -793,11 +954,12 @@ class RealtimeVoiceService {
 
   void pause() {
     _isPaused = true;
-    _audioStreamSubscription?.cancel();
-    _audioStreamSubscription = null;
-    _recorder.stop();
+    _realtimeIdleTimer?.cancel();
+    _idleTimer?.cancel();
+    _stopLocalListening();
     _audioBuffer.clear(reason: 'pause');
     _player.stop();
+    _disconnect();
     onSpeaking?.call(false);
     _interruptionController.markIdle();
     debugPrint('⏸️ [Realtime] Conversation paused');
@@ -807,26 +969,10 @@ class RealtimeVoiceService {
     _isPaused = false;
     _stopped = false;
 
-    if (!_isConnected) {
-      debugPrint('⚠️ [Realtime] Not connected - reconnecting...');
-      // Reconnect with stored settings
-      try {
-        await _player.initialize();
-        await _connect();
-        await _configureSession();
-        await _startAudioStream();
-        debugPrint('🔄 [Realtime] Reconnected and resumed');
-      } catch (e) {
-        debugPrint('❌ [Realtime] Failed to reconnect: $e');
-        onError?.call('Failed to reconnect: $e');
-        return;
-      }
-    } else {
-      await _startAudioStream();
-      debugPrint('▶️ [Realtime] Conversation resumed');
-    }
-
+    // Start local listening - will connect to realtime when speech detected
+    debugPrint('▶️ [Realtime] Resuming with local listening');
     _startIdleTimer();
+    await _startLocalListening();
     _interruptionController.markListening();
     _setState(RealtimeVoiceState.listening);
   }
@@ -896,9 +1042,10 @@ class RealtimeVoiceService {
     }
     _speakCompleter = null;
 
-    // Start listening after speaking completes
-    await _startAudioStream();
+    // Start listening after speaking completes (with local VAD for token savings)
+    await _startLocalListening();
     _startIdleTimer();
+    _startRealtimeIdleTimer();
     _interruptionController.markListening();
     _setState(RealtimeVoiceState.listening);
   }
@@ -957,8 +1104,8 @@ class RealtimeVoiceService {
     // Now set up to listen for the user's response
     _transcriptionCompleter = Completer<String>();
 
-    // Start listening
-    await _startAudioStream();
+    // Start listening (with local VAD for token savings)
+    await _startLocalListening();
     _interruptionController.markListening();
     _setState(RealtimeVoiceState.listening);
 
@@ -980,13 +1127,13 @@ class RealtimeVoiceService {
 
     _idleTimer?.cancel();
     _idleTimer = null;
+    _realtimeIdleTimer?.cancel();
+    _realtimeIdleTimer = null;
     _stopped = true;
     _isPaused = false;
     _shouldEndConversation = false;
 
-    await _audioStreamSubscription?.cancel();
-    _audioStreamSubscription = null;
-    await _recorder.stop();
+    await _stopLocalListening();
 
     _audioBuffer.clear(reason: 'stop_conversation');
     await _player.stop();

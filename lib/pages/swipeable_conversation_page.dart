@@ -7,6 +7,7 @@ import '../services/conversation_service.dart';
 import '../services/local_memory_service.dart';
 import '../services/reminder_service.dart';
 import '../services/reminder_scheduler_service.dart';
+import '../services/planned_search_service.dart';
 import 'face_page.dart';
 import 'dashboard_page.dart';
 import 'notes_page.dart';
@@ -21,6 +22,10 @@ class SwipeableConversationPage extends StatefulWidget {
   final ConsciousnessService consciousnessService;
   final LocalMemoryService localMemoryService;
   final ReminderService reminderService;
+  final PlannedSearchService plannedSearchService;
+  final bool isSearchActive;
+  final String? searchTarget;
+  final int searchCoverage;
   final VoidCallback onExit;
   final VoidCallback? onPause;
   final VoidCallback? onPlay;
@@ -38,6 +43,10 @@ class SwipeableConversationPage extends StatefulWidget {
     required this.consciousnessService,
     required this.localMemoryService,
     required this.reminderService,
+    required this.plannedSearchService,
+    this.isSearchActive = false,
+    this.searchTarget,
+    this.searchCoverage = 0,
     required this.onExit,
     this.onPause,
     this.onPlay,
@@ -117,6 +126,15 @@ class SwipeableConversationPageState extends State<SwipeableConversationPage> {
   void _navigateToDashboard() => navigateToPage(dashboardPageIndex);
   void _navigateToFace() => navigateToPage(facePageIndex);
   void _navigateToNotes() => navigateToPage(notesPageIndex);
+
+  void _startSearch() {
+    // Inject prompt so AI asks what to search for and uses start_search tool
+    widget.conversationService.injectPrompt('User pressed search button. Ask what they want you to find, then use start_search tool with their answer.');
+  }
+
+  void _stopSearch() {
+    widget.plannedSearchService.stopSearch();
+  }
 
   @override
   void dispose() {
@@ -239,6 +257,11 @@ class SwipeableConversationPageState extends State<SwipeableConversationPage> {
             onRefresh: widget.onRefresh,
             onNavigateLeft: _navigateToDashboard,
             onNavigateRight: _navigateToNotes,
+            onSearchStart: _startSearch,
+            onSearchStop: _stopSearch,
+            isSearchActive: widget.isSearchActive,
+            searchTarget: widget.searchTarget,
+            searchCoverage: widget.searchCoverage,
           ),
 
           // Page 2: Notes Page

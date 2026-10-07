@@ -74,7 +74,7 @@ class VoicePipelineService {
   // Idle timeout - pause if no user speech for this long
   Timer? _idleTimer;
   DateTime? _lastUserSpeechTime;
-  int _idleTimeoutSeconds = 60;
+  int _idleTimeoutSeconds = 3600;  // 1 hour - effectively always listening
 
   static const Duration _silenceThreshold = Duration(milliseconds: 1500);  // Stop after 1.5s silence
   static const Duration _maxRecordingDuration = Duration(seconds: 30);     // Max recording time
@@ -97,6 +97,9 @@ class VoicePipelineService {
   void Function(VoiceState state)? onStateChange;
   void Function(String text)? onTranscription;  // User's speech
   void Function(String text)? onResponse;        // AI's response
+
+  // Flag to skip AI processing (set by callback when it handles the input directly)
+  bool skipNextAIResponse = false;
   void Function(String error)? onError;
   void Function(bool speaking)? onSpeaking;
   void Function()? onConversationComplete;       // Called when conversation ends
@@ -188,15 +191,10 @@ class VoicePipelineService {
 
     debugPrint('🎤 Starting conversation');
 
-    // Speak greeting if provided, otherwise let AI speak first
+    // Speak greeting if provided, otherwise just start listening
     if (greeting != null && greeting.isNotEmpty) {
       await _speakText(greeting);
-      // Add greeting to history
       _conversationHistory.add({'role': 'assistant', 'content': greeting});
-    } else {
-      // No greeting - let AI generate the first message naturally
-      debugPrint('🤖 No greeting provided - AI will speak first');
-      await _generateAiFirstMessage();
     }
 
     // Start listening
@@ -503,6 +501,16 @@ class VoicePipelineService {
       debugPrint('👤 User: $transcription');
       onTranscription?.call(transcription);
 
+      // Check if callback handled this (e.g., search command)
+      if (skipNextAIResponse) {
+        skipNextAIResponse = false;
+        _isProcessing = false;
+        if (_isContinuousMode && !_isPaused) {
+          await startListening();
+        }
+        return;
+      }
+
       // Reset idle timer - user is active
       _resetIdleTimer();
 
@@ -801,6 +809,29 @@ class VoicePipelineService {
   /// Public method to speak text (for remote commands)
   Future<void> speakText(String text) => _speakText(text);
 
+  /// Inject a prompt and get AI to respond (for search events, etc.)
+  Future<void> injectPrompt(String prompt) async {
+    if (_stopped || _isPaused) return;
+
+    debugPrint('💉 Injecting prompt: $prompt');
+
+    // Add as system instruction
+    _conversationHistory.add({'role': 'user', 'content': '[System: $prompt]'});
+
+    // Get AI response
+    final response = await _callLLM(prompt);
+    if (response?.content != null && response!.content!.isNotEmpty) {
+      onResponse?.call(response.content!);
+      _conversationHistory.add({'role': 'assistant', 'content': response.content!});
+      await _speakText(response.content!);
+    }
+
+    // Resume listening if in continuous mode
+    if (_isContinuousMode && !_isPaused) {
+      await startListening();
+    }
+  }
+
   /// Text to Speech and play (like millie_mini pattern)
   Future<void> _speakText(String text) async {
     debugPrint('🔊 TTS: _speakText called with ${text.length} chars');
@@ -820,6 +851,7 @@ class VoicePipelineService {
     }
 
     onStateChange?.call(VoiceState.speaking);
+    _idleTimer?.cancel(); // Stop idle timer while speaking
     onSpeaking?.call(true);
     _isPlaying = true;
     debugPrint('🔊 TTS: Starting...');
@@ -892,6 +924,7 @@ class VoicePipelineService {
       // Only notify if not already paused (pause() already called onSpeaking(false))
       if (!_isPaused) {
         onSpeaking?.call(false);
+        _startIdleTimer(); // Restart idle timer now that we're done speaking
       }
     }
   }

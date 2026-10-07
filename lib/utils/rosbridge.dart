@@ -714,8 +714,12 @@ class RosBridge {
   void Function()? onPlay;    // When controller requests play (start/resume AI conversation)
   void Function()? onPause;   // When controller requests pause (stop AI conversation)
   void Function()? onExit;    // When controller requests exit (return to launch page)
-  void Function()? onWanderStart;  // When controller requests silent wander mode start
-  void Function()? onWanderStop;   // When controller requests silent wander mode stop
+  void Function()? onWanderStart;  // When controller requests wander mode start
+  void Function()? onWanderStop;   // When controller requests wander mode stop
+  void Function()? onVisionWanderStart;  // When controller requests vision wander mode start (deprecated)
+  void Function()? onVisionWanderStop;   // When controller requests vision wander mode stop (deprecated)
+  void Function()? onSearchStart;  // When controller requests search mode start
+  void Function()? onSearchStop;   // When controller requests search mode stop
   void Function()? onRefresh; // When controller requests AI context refresh
   void Function(String)? onSpeakCommand;  // When controller sends text for robot to speak
   void Function(int)? onVoiceIdleTimeout;  // When controller sets voice idle timeout
@@ -851,6 +855,9 @@ class RosBridge {
       // Subscribe to mode commands (launch/play/pause) from controller
       _subscribe('/millie/mode', 'std_msgs/msg/String');
 
+      // Subscribe to search commands from controller
+      _subscribe('/millie/search', 'std_msgs/msg/String');
+
       // Subscribe to AI refresh command from controller
       _subscribe('/millie/ai/refresh', 'std_msgs/msg/String');
 
@@ -891,7 +898,7 @@ class RosBridge {
       // Subscribe to nav_command_node's unified nav status (works for both direct and lane navigation)
       _subscribe('/millie/nav/status', 'std_msgs/msg/String');
       
-      // Laser scan disabled - needs TF sync for proper display
+      // Laser scan - disabled (floods connection, blocks pose updates)
       // _subscribeThrottled('/scan_filtered', 'sensor_msgs/msg/LaserScan', 500);
       
     } catch (e) {
@@ -995,6 +1002,8 @@ class RosBridge {
           _handleVoiceAgentStartMessage();
         } else if (topic == '/millie/mode') {
           _handleModeMessage(msg['msg']);
+        } else if (topic == '/millie/search') {
+          _handleSearchMessage(msg['msg']);
         } else if (topic == '/millie/ai/refresh') {
           _handleRefreshMessage();
         } else if (topic == '/millie/speak') {
@@ -1113,6 +1122,7 @@ class RosBridge {
   
   void _handlePoseMessage(Map<String, dynamic> msg) {
     try {
+      print("📍 Pose message received");
       final pose = msg['pose']['pose'];
       final position = pose['position'];
       final orientation = pose['orientation'];
@@ -1241,10 +1251,38 @@ class RosBridge {
         case 'wander_stop':
           onWanderStop?.call();
           break;
+        case 'vision_wander_start':
+          onVisionWanderStart?.call();
+          break;
+        case 'vision_wander_stop':
+          onVisionWanderStop?.call();
+          break;
       }
     } catch (e) {
       print("⚠️ Error parsing mode command: $e");
     }
+  }
+
+  void _handleSearchMessage(Map<String, dynamic> msg) {
+    try {
+      final command = msg['data'] as String;
+      print("🔍 Search command received: $command");
+      switch (command) {
+        case 'start':
+          onSearchStart?.call();
+          break;
+        case 'stop':
+          onSearchStop?.call();
+          break;
+      }
+    } catch (e) {
+      print("⚠️ Error parsing search command: $e");
+    }
+  }
+
+  /// Publish search status (for controller to display)
+  void publishSearchStatus(String status) {
+    _publishSimple('/millie/search/status', status);
   }
 
   void _handleRefreshMessage() {
@@ -1673,7 +1711,19 @@ class RosBridge {
   void stopMovement() {
     publishVelocity(linear: 0.0, angular: 0.0);
   }
-  
+
+  /// Publish pure rotation (no linear movement)
+  /// angular: counter-clockwise (+) / clockwise (-) velocity in rad/s
+  void publishRotation(double angular) {
+    publishVelocity(linear: 0.0, angular: angular);
+  }
+
+  /// Send raw JSON message to ROSBridge (for custom topics)
+  void sendRaw(String jsonMessage) {
+    if (_channel == null || !_connected) return;
+    _channel!.sink.add(jsonMessage);
+  }
+
   /// Send a navigation goal to Nav2
   void publishNavGoal(double x, double y, {double theta = 0.0}) {
     if (!_connected || _channel == null) {
@@ -2026,8 +2076,8 @@ class RosBridge {
       return;
     }
 
-    // Disable explore mode (wander + motion detector)
-    disableExploreMode();
+    // Disable all movement modes (wander, follow, track)
+    deactivateAllModes();
 
     // Cancel Nav2 navigation via service call
     publishCancelNav();
@@ -2122,7 +2172,7 @@ class RosBridge {
   void publishCenterOnHuman(bool enable) => _publishBool("/oak/center_on_human", enable);
 
   // ===========================================================================
-  // MODE CONTROL: Wander, Follow, Track, Patrol (mutually exclusive)
+  // MODE CONTROL: Wander, Follow, Track (mutually exclusive)
   // Centralized mode manager - ALWAYS stops all before starting new mode
   // ===========================================================================
 
@@ -2173,35 +2223,9 @@ class RosBridge {
     _publishBool("/oak/center_on_human", false);
   }
 
-  /// Activate Patrol mode (wander + person detection combined)
-  void activatePatrolMode() {
-    print('🔍 Activating Patrol mode (wander + follow)');
-    _stopAllMovementModes();
-    _publishBool("/wander/enable", true);
-    _publishBool("/person_follower/enable", true);
-  }
-
-  /// Deactivate Patrol mode
-  void deactivatePatrolMode() {
-    print('🛑 Deactivating Patrol mode');
-    _publishBool("/wander/enable", false);
-    _publishBool("/person_follower/enable", false);
-  }
-
   /// Stop all autonomous modes (wander, follow, track)
   void deactivateAllModes() {
     _stopAllMovementModes();
-  }
-
-  // Legacy methods for backward compatibility
-  @Deprecated('Use activatePatrolMode() instead')
-  void enableExploreMode() {
-    activatePatrolMode();
-  }
-
-  @Deprecated('Use deactivatePatrolMode() instead')
-  void disableExploreMode() {
-    deactivatePatrolMode();
   }
 
   void _publishBool(String topic, bool value) {

@@ -3,7 +3,7 @@ import '../utils/constants.dart';
 import '../utils/rosbridge.dart';
 
 /// Control bar overlay for Face pages - matches millie_mini style
-/// Top bar: Wander, Follow, Patrol buttons with toggle states
+/// Top bar: Wander, Follow, Track, Search buttons with toggle states
 /// Bottom bar: Control buttons with grey background
 class ControlBar extends StatefulWidget {
   final RosBridge rosBridge;
@@ -21,8 +21,13 @@ class ControlBar extends StatefulWidget {
   final VoidCallback? onWanderStop;
   final VoidCallback? onFollowStart;
   final VoidCallback? onFollowStop;
-  final VoidCallback? onPatrolStart;
-  final VoidCallback? onPatrolStop;
+
+  // Search mode callbacks
+  final VoidCallback? onSearchStart;
+  final VoidCallback? onSearchStop;
+  final bool isSearchActive;
+  final String? searchTarget;
+  final int searchCoverage;  // 0-100 percentage
 
   const ControlBar({
     super.key,
@@ -39,8 +44,11 @@ class ControlBar extends StatefulWidget {
     this.onWanderStop,
     this.onFollowStart,
     this.onFollowStop,
-    this.onPatrolStart,
-    this.onPatrolStop,
+    this.onSearchStart,
+    this.onSearchStop,
+    this.isSearchActive = false,
+    this.searchTarget,
+    this.searchCoverage = 0,
   });
 
   @override
@@ -54,12 +62,8 @@ class _ControlBarState extends State<ControlBar> {
   bool _trackActive = false;  // Camera tracking (independent)
 
   // Derived display states (for button UI)
-  // wander && !follow = Wander button ON
-  // follow && !wander = Follow button ON
-  // wander && follow = Patrol button ON
   bool get _wanderActive => _wanderOn && !_followOn;
   bool get _followActive => _followOn && !_wanderOn;
-  bool get _patrolActive => _wanderOn && _followOn;
 
   @override
   void initState() {
@@ -74,7 +78,7 @@ class _ControlBarState extends State<ControlBar> {
       final isOn = status != 'disabled' && status != 'idle' && status.isNotEmpty;
       if (isOn != _wanderOn) {
         setState(() => _wanderOn = isOn);
-        debugPrint('🚶 Wander: $status -> wanderOn=$_wanderOn (wander=$_wanderActive, patrol=$_patrolActive)');
+        debugPrint('🚶 Wander: $status -> wanderOn=$_wanderOn (wander=$_wanderActive)');
       }
     };
 
@@ -85,7 +89,7 @@ class _ControlBarState extends State<ControlBar> {
       final isOn = mode != 'disabled';
       if (isOn != _followOn) {
         setState(() => _followOn = isOn);
-        debugPrint('👤 Follow: $mode -> followOn=$_followOn (follow=$_followActive, patrol=$_patrolActive)');
+        debugPrint('👤 Follow: $mode -> followOn=$_followOn (follow=$_followActive)');
       }
     };
   }
@@ -147,25 +151,14 @@ class _ControlBarState extends State<ControlBar> {
     widget.onHide();
   }
 
-  // Handle Patrol toggle
-  void _handlePatrolTap() {
-    if (_patrolActive) {
-      // Stop patrol
-      widget.rosBridge.deactivatePatrolMode();
-      widget.onPatrolStop?.call();
-      setState(() {
-        _wanderOn = false;
-        _followOn = false;
-      });
+  // Handle Search toggle
+  void _handleSearchTap() {
+    if (widget.isSearchActive) {
+      // Stop search
+      widget.onSearchStop?.call();
     } else {
-      // Start patrol (stops other modes via rosbridge)
-      widget.rosBridge.activatePatrolMode();
-      widget.onPatrolStart?.call();
-      setState(() {
-        _wanderOn = true;
-        _followOn = true;
-        _trackActive = false;
-      });
+      // Start search (will prompt for target via AI)
+      widget.onSearchStart?.call();
     }
     widget.onHide();
   }
@@ -174,7 +167,7 @@ class _ControlBarState extends State<ControlBar> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Top Control Bar: Wander, Follow, Patrol (toggle buttons)
+        // Top Control Bar: Wander, Follow, Track, Search (toggle buttons)
         SafeArea(
           bottom: false,
           child: Container(
@@ -224,12 +217,13 @@ class _ControlBarState extends State<ControlBar> {
                   onTap: _handleTrackTap,
                   buttonColor: _trackActive ? Colors.red : AppColors.accent,
                 ),
-                // Patrol button
-                _ControlButton(
-                  icon: _patrolActive ? Icons.search_off : Icons.search,
-                  label: _patrolActive ? 'Stop' : 'Patrol',
-                  onTap: _handlePatrolTap,
-                  buttonColor: _patrolActive ? Colors.red : AppColors.dangerBright,
+                // Search button (orange)
+                _SearchButton(
+                  isActive: widget.isSearchActive,
+                  target: widget.searchTarget,
+                  coverage: widget.searchCoverage,
+                  onTap: _handleSearchTap,
+                  buttonColor: AppColors.dangerBright,
                 ),
               ],
             ),
@@ -343,6 +337,77 @@ class _ControlButton extends StatelessWidget {
           const SizedBox(height: AppSpacing.xs),
           Text(
             label,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Search button with coverage overlay when active
+class _SearchButton extends StatelessWidget {
+  final bool isActive;
+  final String? target;
+  final int coverage;
+  final VoidCallback onTap;
+  final Color buttonColor;
+
+  const _SearchButton({
+    required this.isActive,
+    required this.target,
+    required this.coverage,
+    required this.onTap,
+    this.buttonColor = AppColors.dangerBright,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              // Background circle
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: isActive ? Colors.red : buttonColor,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isActive ? Icons.search_off : Icons.search,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
+              // Coverage overlay (circular progress) when active
+              if (isActive)
+                SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: CircularProgressIndicator(
+                    value: coverage / 100.0,
+                    strokeWidth: 3,
+                    backgroundColor: Colors.white.withOpacity(0.2),
+                    valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            isActive
+                ? (target != null ? '$coverage%' : 'Stop')
+                : 'Search',
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,

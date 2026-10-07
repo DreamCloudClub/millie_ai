@@ -1,6 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import '../utils/rosbridge.dart';
+import 'local_cache_service.dart';
+import 'planned_search_service.dart';
+import 'visual_coverage.dart';
 
 /// Result from executing an AI tool
 class ToolResult {
@@ -39,6 +46,71 @@ class ToolCall {
   }
 }
 
+// VisualObservation, UnseenRegion, and VisualCoverageMap moved to visual_coverage.dart
+
+/// Active search session - tracks ongoing visual search
+class SearchSession {
+  final String target;
+  final DateTime startTime;
+  final List<VisualObservation> observations = [];
+  VisualCoverageMap? coverage;
+  bool targetFound = false;
+  VisualObservation? foundObservation;
+
+  SearchSession({required this.target}) : startTime = DateTime.now();
+
+  /// Record a new observation and update coverage
+  void recordObservation(VisualObservation obs) {
+    observations.add(obs);
+
+    // Update coverage map
+    coverage?.markVisibilityCone(obs.x, obs.y, obs.headingDegrees);
+
+    // Check if target was found
+    if (obs.targetVisible && obs.confidence > 0.75) {
+      targetFound = true;
+      foundObservation = obs;
+    }
+  }
+
+  /// Get current search status as structured data for AI
+  Map<String, dynamic> getStatus(double robotX, double robotY, double robotHeading) {
+    final coveragePercent = coverage?.getCoveragePercent() ?? 0.0;
+    final unseenRegions = coverage?.findUnseenRegions(robotX, robotY, robotHeading) ?? [];
+    final suggestedViewpoint = coverage?.suggestNextViewpoint(robotX, robotY, robotHeading);
+
+    return {
+      'search_target': target,
+      'target_found': targetFound,
+      'coverage_percent': coveragePercent.round(),
+      'observations_count': observations.length,
+      'search_duration_seconds': DateTime.now().difference(startTime).inSeconds,
+      'current_pose': {
+        'x': robotX,
+        'y': robotY,
+        'heading': robotHeading,
+      },
+      'unseen_regions': unseenRegions.map((r) => r.toJson()).toList(),
+      'suggested_next_viewpoint': suggestedViewpoint,
+      'recent_observations': observations.reversed.take(5).map((o) => {
+        'x': o.x,
+        'y': o.y,
+        'heading': o.headingDegrees,
+        'result': o.targetVisible ? 'FOUND' : (o.possibleMatch ? 'possible' : 'not visible'),
+        'confidence': o.confidence,
+        'scene': o.scene,
+      }).toList(),
+      if (targetFound && foundObservation != null) 'found_at': {
+        'x': foundObservation!.x,
+        'y': foundObservation!.y,
+        'heading': foundObservation!.headingDegrees,
+        'location_in_image': foundObservation!.targetLocation,
+        'description': foundObservation!.description,
+      },
+    };
+  }
+}
+
 /// Workflow Tools for AI function calling
 /// Gives the Default Action full control over the robot:
 /// - Navigate to any waypoint
@@ -46,7 +118,10 @@ class ToolCall {
 /// - Control workflow (pause, resume, stop, etc.)
 class WorkflowTools {
   final RosBridge rosBridge;
-  
+
+  // Planned search service reference (for object search)
+  PlannedSearchService? plannedSearchService;
+
   // Callback when workflow is confirmed and conversation should end
   void Function()? onWorkflowConfirmed;
 
@@ -83,6 +158,31 @@ class WorkflowTools {
   bool _wanderActive = false;
   String _wanderStatus = 'disabled';  // disabled, enabled, navigating, paused_person, etc.
 
+  // Vision configuration
+  static const String _cameraSnapshotUrl = 'http://192.168.0.157:8080/snapshot?topic=/oak/rgb/image_raw';
+  static const String _visionApiUrl = 'https://api.openai.com/v1/chat/completions';
+  static const String _visionModel = 'gpt-4o-mini';
+  static String? _apiKey;
+
+  // LiDAR data (updated from rosbridge)
+  LaserScan? _currentScan;
+
+  // Visual search session
+  SearchSession? _searchSession;
+
+  // Track if wander was active before search (to resume after)
+  bool _wanderActiveBeforeSearch = false;
+
+  /// Set the OpenAI API key for vision
+  static void setApiKey(String key) {
+    _apiKey = key;
+  }
+
+  /// Update LiDAR scan data
+  void updateLaserScan(LaserScan scan) {
+    _currentScan = scan;
+  }
+
   /// Update person detection status (called from conversation_service)
   void updatePersonStatus({required bool detected, double? distance, bool centered = false}) {
     _personDetected = detected;
@@ -106,11 +206,7 @@ class WorkflowTools {
   void Function()? onWanderModeStart;
   void Function()? onWanderModeStop;
 
-  // Callback for patrol mode (wander + person detection)
-  void Function()? onPatrolModeStart;
-  void Function()? onPatrolModeStop;
-
-  // Callback for go_away to trigger Patrol Mode
+  // Callback for go_away to trigger Wander Mode
   void Function()? onGoAwayRequested;
 
   // Callback for approach_user to move toward detected person
@@ -237,12 +333,41 @@ class WorkflowTools {
         },
       },
     },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'navigate_to_position',
+        'description': 'Navigate to specific map coordinates with optional heading. Use for search viewpoints suggested by get_search_status(). Set wait=true to wait for arrival before returning.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'x': {
+              'type': 'number',
+              'description': 'X coordinate in meters (map frame)',
+            },
+            'y': {
+              'type': 'number',
+              'description': 'Y coordinate in meters (map frame)',
+            },
+            'heading': {
+              'type': 'number',
+              'description': 'Optional: target heading in degrees (0 = +X axis, 90 = +Y axis)',
+            },
+            'wait': {
+              'type': 'boolean',
+              'description': 'If true, wait for navigation to complete before returning. Default: true.',
+            },
+          },
+          'required': ['x', 'y'],
+        },
+      },
+    },
     // DIRECT MOVEMENT
     {
       'type': 'function',
       'function': {
         'name': 'move_robot',
-        'description': '''Move the robot directly. Match user words to directions:
+        'description': '''Move the robot directly. Only back up when front is blocked - camera is front-facing so backing up is blind. Match user words to directions:
 - "go forward" / "back up" → forward/back
 - "turn left/right" → left/right (90 degrees)
 - "turn a little" / "slightly" / "small turn" → slight_left/slight_right (45 degrees)
@@ -259,6 +384,130 @@ class WorkflowTools {
             },
           },
           'required': ['direction'],
+        },
+      },
+    },
+    // VISION
+    {
+      'type': 'function',
+      'function': {
+        'name': 'look',
+        'description': '''Look through the camera. Returns structured perception data.
+
+Without search_target: General scene description.
+With search_target: Focused search for specific object/feature.
+
+Returns JSON with:
+- target: what was searched for (if any)
+- visible: true/false (is target visible?)
+- confidence: 0.0-1.0
+- possible_match: true if something similar but uncertain
+- location: where in image (left/center/right, near/far)
+- description: brief description of target or scene
+- scene: room type and notable features (doors, furniture, openings)''',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'search_target': {
+              'type': 'string',
+              'description': 'Optional: specific object to search for (e.g., "blue suitcase", "person", "doorway")',
+            },
+          },
+          'required': [],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'get_surroundings',
+        'description': 'Get LiDAR distance readings in all directions. Returns distances to obstacles: Front, Front-Left, Left, Back-Left, Back, Back-Right, Right, Front-Right. Use to check for obstacles before moving.',
+        'parameters': {
+          'type': 'object',
+          'properties': {},
+          'required': [],
+        },
+      },
+    },
+    // VISUAL SEARCH
+    {
+      'type': 'function',
+      'function': {
+        'name': 'start_search',
+        'description': '''Start an AUTONOMOUS visual search. The robot will:
+- Wander around exploring the area on its own
+- Analyze camera frames every 3 seconds looking for the target
+- Track which areas have been checked
+- Ask for verification when it thinks it found something
+
+After calling this, DO NOT say "I can't find it" - the search runs automatically in the background.
+You will be notified when the robot needs your input (verification) or finds the target.''',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'target': {
+              'type': 'string',
+              'description': 'What to search for (e.g., "blue suitcase", "cat", "red book")',
+            },
+          },
+          'required': ['target'],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'get_search_status',
+        'description': 'Check progress of the autonomous search. Returns coverage percentage and unseen areas.',
+        'parameters': {
+          'type': 'object',
+          'properties': {},
+          'required': [],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'end_search',
+        'description': 'ONLY use when USER explicitly asks to stop searching (e.g., "stop looking", "never mind", "cancel search"). NEVER call this just because you haven\'t found it yet.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'found': {
+              'type': 'boolean',
+              'description': 'Whether the target was found',
+            },
+            'summary': {
+              'type': 'string',
+              'description': 'Brief summary of search result',
+            },
+          },
+          'required': ['found'],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'confirm_search_target',
+        'description': 'ONLY use when USER explicitly confirms "yes", "that\'s it", "correct". NEVER call this unless the user has clearly confirmed.',
+        'parameters': {
+          'type': 'object',
+          'properties': {},
+          'required': [],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'reject_search_target',
+        'description': 'ONLY use when USER explicitly says "no", "that\'s not it", "wrong one", "keep looking". Resumes autonomous search.',
+        'parameters': {
+          'type': 'object',
+          'properties': {},
+          'required': [],
         },
       },
     },
@@ -355,37 +604,12 @@ class WorkflowTools {
         },
       },
     },
-    // PATROL MODE (wander + person detection, auto-engage)
-    {
-      'type': 'function',
-      'function': {
-        'name': 'patrol',
-        'description': 'Start patrol mode (wander + detect humans). Robot explores and will engage when it finds someone. Use when user says "patrol", "go patrol", "patrol mode".',
-        'parameters': {
-          'type': 'object',
-          'properties': {},
-          'required': [],
-        },
-      },
-    },
-    {
-      'type': 'function',
-      'function': {
-        'name': 'stop_patrol',
-        'description': 'Stop patrol mode. Use when user says "stop patrol", "stop patrolling".',
-        'parameters': {
-          'type': 'object',
-          'properties': {},
-          'required': [],
-        },
-      },
-    },
     // GO AWAY / COME BACK
     {
       'type': 'function',
       'function': {
         'name': 'go_away',
-        'description': 'Robot goes away and patrols (wander + detect). Saves current position to return to later. Use when user says "go away", "leave me alone".',
+        'description': 'Robot goes away and wanders. Saves current position to return to later. Use when user says "go away", "leave me alone".',
         'parameters': {
           'type': 'object',
           'properties': {},
@@ -533,10 +757,30 @@ class WorkflowTools {
       // Navigation
       case 'navigate_to_waypoint':
         return _navigateToWaypoint(toolCall.arguments);
+      case 'navigate_to_position':
+        return await _navigateToPosition(toolCall.arguments);
 
       // Direct movement
       case 'move_robot':
         return _moveRobot(toolCall.arguments);
+
+      // Vision
+      case 'look':
+        return await _look(toolCall.arguments);
+      case 'get_surroundings':
+        return _getSurroundings();
+
+      // Visual Search
+      case 'start_search':
+        return await _startSearch(toolCall.arguments);
+      case 'get_search_status':
+        return _getSearchStatus();
+      case 'end_search':
+        return _endSearch(toolCall.arguments);
+      case 'confirm_search_target':
+        return _confirmSearchTarget();
+      case 'reject_search_target':
+        return _rejectSearchTarget();
 
       // Queries
       case 'get_available_waypoints':
@@ -559,12 +803,6 @@ class WorkflowTools {
         return _startWanderMode();
       case 'stop_wandering':
         return _stopWanderMode();
-
-      // Patrol mode (wander + person detection)
-      case 'patrol':
-        return _startPatrolMode();
-      case 'stop_patrol':
-        return _stopPatrolMode();
 
       // Go away / Come back / Approach
       case 'go_away':
@@ -630,7 +868,103 @@ class WorkflowTools {
       message: 'Navigating to ${waypoint.name}.',
     );
   }
-  
+
+  Future<ToolResult> _navigateToPosition(Map<String, dynamic> args) async {
+    final x = (args['x'] as num?)?.toDouble();
+    final y = (args['y'] as num?)?.toDouble();
+    final headingDegrees = (args['heading'] as num?)?.toDouble();
+    final wait = args['wait'] as bool? ?? true; // Default to waiting
+
+    if (x == null || y == null) {
+      return ToolResult(
+        success: false,
+        message: 'Missing x or y coordinates.',
+      );
+    }
+
+    // Convert heading to radians if provided
+    final theta = headingDegrees != null ? headingDegrees * 3.14159 / 180.0 : 0.0;
+
+    // Navigate using Nav2
+    rosBridge.publishNavGoal(x, y, theta: theta);
+    debugPrint('🧭 [WorkflowTools] Navigating to position ($x, $y) heading ${headingDegrees ?? 0}°, wait=$wait');
+
+    if (!wait) {
+      // Return immediately without waiting
+      return ToolResult(
+        success: true,
+        message: 'Navigation started to (${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)})${headingDegrees != null ? ' facing ${headingDegrees.toStringAsFixed(0)}°' : ''}. Not waiting for arrival.',
+      );
+    }
+
+    // Wait for navigation to complete
+    final completer = Completer<NavStatus>();
+    void listener(NavStatus status) {
+      if (status == NavStatus.succeeded ||
+          status == NavStatus.failed ||
+          status == NavStatus.canceled) {
+        if (!completer.isCompleted) {
+          completer.complete(status);
+        }
+      }
+    }
+
+    rosBridge.addNavStatusListener(listener);
+
+    try {
+      // Wait for completion with timeout (60 seconds max for navigation)
+      bool timedOut = false;
+      final finalStatus = await completer.future.timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          debugPrint('🧭 [WorkflowTools] Navigation timeout after 60 seconds');
+          timedOut = true;
+          return NavStatus.failed;
+        },
+      );
+
+      rosBridge.removeNavStatusListener(listener);
+
+      // Handle timeout separately so AI knows the difference
+      if (timedOut) {
+        return ToolResult(
+          success: false,
+          message: 'Navigation timed out after 60 seconds. Viewpoint (${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)}) may be unreachable or blocked.',
+          data: {'status': 'timeout', 'x': x, 'y': y},
+        );
+      }
+
+      switch (finalStatus) {
+        case NavStatus.succeeded:
+          return ToolResult(
+            success: true,
+            message: 'Arrived at position (${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)})${headingDegrees != null ? ' facing ${headingDegrees.toStringAsFixed(0)}°' : ''}.',
+            data: {'status': 'succeeded', 'x': x, 'y': y},
+          );
+        case NavStatus.canceled:
+          return ToolResult(
+            success: false,
+            message: 'Navigation to (${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)}) was canceled.',
+            data: {'status': 'canceled', 'x': x, 'y': y},
+          );
+        case NavStatus.failed:
+        default:
+          return ToolResult(
+            success: false,
+            message: 'Navigation to (${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)}) failed. Path may be blocked.',
+            data: {'status': 'failed', 'x': x, 'y': y},
+          );
+      }
+    } catch (e) {
+      rosBridge.removeNavStatusListener(listener);
+      return ToolResult(
+        success: false,
+        message: 'Navigation error: $e',
+        data: {'status': 'error', 'x': x, 'y': y},
+      );
+    }
+  }
+
   // ===========================================================================
   // ACTIONS
   // ===========================================================================
@@ -1023,7 +1357,477 @@ class WorkflowTools {
       message: responses[direction] ?? 'Moving $direction.',
     );
   }
-  
+
+  // ===========================================================================
+  // VISION
+  // ===========================================================================
+
+  /// Look through the camera - returns structured perception data
+  /// If search_target is provided, focuses on finding that specific object
+  Future<ToolResult> _look(Map<String, dynamic> args) async {
+    final searchTarget = args['search_target'] as String?;
+
+    // Capture pose at observation time
+    final observationPose = _pose;
+    final headingDegrees = observationPose != null
+        ? observationPose.theta * 180.0 / 3.14159
+        : 0.0;
+
+    if (_apiKey == null || _apiKey!.isEmpty) {
+      // Try loading from cache
+      final key = await LocalCacheService.loadOpenAIApiKey();
+      if (key != null && key.isNotEmpty) {
+        _apiKey = key;
+      } else {
+        return ToolResult(
+          success: false,
+          message: 'Vision not available - no API key configured.',
+        );
+      }
+    }
+
+    try {
+      // Capture camera frame
+      final imageResponse = await http.get(Uri.parse(_cameraSnapshotUrl))
+          .timeout(const Duration(seconds: 3));
+
+      if (imageResponse.statusCode != 200) {
+        return ToolResult(
+          success: false,
+          message: 'Camera unavailable.',
+        );
+      }
+
+      final imageBytes = imageResponse.bodyBytes;
+      final base64Image = base64Encode(imageBytes);
+
+      // Build prompt based on whether we're searching for something specific
+      String systemPrompt;
+      String userPrompt;
+
+      if (searchTarget != null && searchTarget.isNotEmpty) {
+        // Target-aware search mode
+        systemPrompt = '''You are a robot's visual perception system. Your job is ONLY to report what you see - not to suggest actions.
+
+Analyze the image and respond with ONLY a JSON object (no markdown, no explanation):
+{
+  "target": "<the search target>",
+  "visible": true/false,
+  "confidence": 0.0-1.0,
+  "possible_match": true/false (something similar but uncertain),
+  "location": "left/center/right of image, near/mid/far" (only if visible or possible_match),
+  "description": "brief description of the target if found, or why you're uncertain",
+  "scene": "room type and notable features: doors, openings, furniture, obstacles"
+}
+
+Be precise about confidence:
+- 0.9+ = clearly visible and identifiable
+- 0.7-0.9 = likely match but partially obscured or at angle
+- 0.5-0.7 = possible match, uncertain
+- <0.5 = probably not the target
+
+Always describe the scene context even if target not found.''';
+        userPrompt = 'Search for: $searchTarget';
+      } else {
+        // General observation mode
+        systemPrompt = '''You are a robot's visual perception system. Analyze the image and respond with ONLY a JSON object (no markdown, no explanation):
+{
+  "target": null,
+  "visible": false,
+  "confidence": 0.0,
+  "possible_match": false,
+  "location": null,
+  "description": "brief description of what you see",
+  "scene": "room type and notable features: doors, openings, furniture, people, obstacles, colors"
+}
+
+Focus on: room layout, doorways/openings, obstacles, people, notable objects, spatial features.''';
+        userPrompt = 'Describe what you see.';
+      }
+
+      // Call GPT-4o-mini vision
+      final response = await http.post(
+        Uri.parse(_visionApiUrl),
+        headers: {
+          'Authorization': 'Bearer $_apiKey',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'model': _visionModel,
+          'messages': [
+            {
+              'role': 'system',
+              'content': systemPrompt,
+            },
+            {
+              'role': 'user',
+              'content': [
+                {'type': 'text', 'text': userPrompt},
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': 'data:image/jpeg;base64,$base64Image',
+                    'detail': 'high',
+                  },
+                },
+              ],
+            },
+          ],
+          'max_tokens': 250,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) {
+        return ToolResult(
+          success: false,
+          message: 'Vision API error: ${response.statusCode}',
+        );
+      }
+
+      final data = jsonDecode(response.body);
+      final rawContent = data['choices']?[0]?['message']?['content'] as String? ?? '{}';
+
+      // Clean up the response (remove markdown code blocks if present)
+      String jsonContent = rawContent.trim();
+      if (jsonContent.startsWith('```')) {
+        jsonContent = jsonContent.replaceAll(RegExp(r'^```json?\n?'), '').replaceAll(RegExp(r'\n?```$'), '');
+      }
+
+      debugPrint('👁️ [WorkflowTools] Vision response: $jsonContent');
+
+      // Parse and validate the JSON
+      try {
+        final parsed = jsonDecode(jsonContent) as Map<String, dynamic>;
+
+        // Ensure all expected fields exist
+        final result = {
+          'target': parsed['target'] ?? searchTarget,
+          'visible': parsed['visible'] ?? false,
+          'confidence': parsed['confidence'] ?? 0.0,
+          'possible_match': parsed['possible_match'] ?? false,
+          'location': parsed['location'],
+          'description': parsed['description'] ?? 'No description',
+          'scene': parsed['scene'] ?? 'Unknown scene',
+        };
+
+        // Add pose to result
+        if (observationPose != null) {
+          result['pose'] = {
+            'x': observationPose.x,
+            'y': observationPose.y,
+            'heading': headingDegrees,
+          };
+        }
+
+        // Log for debugging
+        if (searchTarget != null) {
+          final visible = result['visible'] as bool;
+          final confidence = result['confidence'];
+          debugPrint('👁️ [WorkflowTools] Search "$searchTarget": visible=$visible, confidence=$confidence');
+        }
+
+        // Record observation in active search session
+        if (_searchSession != null && observationPose != null) {
+          final observation = VisualObservation(
+            timestamp: DateTime.now(),
+            x: observationPose.x,
+            y: observationPose.y,
+            headingDegrees: headingDegrees,
+            searchTarget: searchTarget ?? _searchSession!.target,
+            targetVisible: result['visible'] as bool? ?? false,
+            confidence: (result['confidence'] as num?)?.toDouble() ?? 0.0,
+            targetLocation: result['location'] as String?,
+            possibleMatch: result['possible_match'] as bool? ?? false,
+            scene: result['scene'] as String? ?? '',
+            description: result['description'] as String? ?? '',
+          );
+          _searchSession!.recordObservation(observation);
+          debugPrint('👁️ [WorkflowTools] Recorded observation at (${observationPose.x.toStringAsFixed(1)}, ${observationPose.y.toStringAsFixed(1)}) heading ${headingDegrees.toStringAsFixed(0)}°');
+          debugPrint('👁️ [WorkflowTools] Coverage now: ${_searchSession!.coverage?.getCoveragePercent().toStringAsFixed(1)}%');
+        }
+
+        return ToolResult(
+          success: true,
+          message: jsonEncode(result),
+          data: result,
+        );
+      } catch (parseError) {
+        // If JSON parsing fails, return raw content wrapped in structure
+        debugPrint('👁️ [WorkflowTools] JSON parse error, returning raw: $parseError');
+        return ToolResult(
+          success: true,
+          message: jsonContent,
+        );
+      }
+    } catch (e) {
+      debugPrint('👁️ [WorkflowTools] Vision error: $e');
+      return ToolResult(
+        success: false,
+        message: 'Vision error: $e',
+      );
+    }
+  }
+
+  /// Get LiDAR surroundings summary
+  ToolResult _getSurroundings() {
+    if (_currentScan == null) {
+      return ToolResult(
+        success: false,
+        message: 'LiDAR data not available.',
+      );
+    }
+
+    final scan = _currentScan!;
+    final buffer = StringBuffer('Distances to obstacles:\n');
+
+    // 8 sectors, 45 degrees each
+    final sectors = {
+      'Front': [-22.5, 22.5],
+      'Front-Right': [22.5, 67.5],
+      'Right': [67.5, 112.5],
+      'Back-Right': [112.5, 157.5],
+      'Back': [157.5, -157.5],
+      'Back-Left': [-157.5, -112.5],
+      'Left': [-112.5, -67.5],
+      'Front-Left': [-67.5, -22.5],
+    };
+
+    for (final entry in sectors.entries) {
+      final minDist = _getMinDistanceInSector(scan, entry.value[0], entry.value[1]);
+      if (minDist == null || minDist > 10.0) {
+        buffer.writeln('- ${entry.key}: clear (>10m)');
+      } else if (minDist < 0.5) {
+        buffer.writeln('- ${entry.key}: BLOCKED (${minDist.toStringAsFixed(1)}m)');
+      } else if (minDist < 1.0) {
+        buffer.writeln('- ${entry.key}: close (${minDist.toStringAsFixed(1)}m)');
+      } else {
+        buffer.writeln('- ${entry.key}: ${minDist.toStringAsFixed(1)}m');
+      }
+    }
+
+    return ToolResult(
+      success: true,
+      message: buffer.toString(),
+    );
+  }
+
+  /// Get minimum distance in a LiDAR sector
+  double? _getMinDistanceInSector(LaserScan scan, double startAngleDeg, double endAngleDeg) {
+    final startAngle = startAngleDeg * 3.14159 / 180.0;
+    final endAngle = endAngleDeg * 3.14159 / 180.0;
+
+    double? minDistance;
+
+    for (int i = 0; i < scan.ranges.length; i++) {
+      final angle = scan.angleMin + (i * scan.angleIncrement);
+
+      bool inSector;
+      if (startAngleDeg > endAngleDeg) {
+        // Wraps around (e.g., 157.5 to -157.5 for Back)
+        inSector = angle >= startAngle || angle <= endAngle;
+      } else {
+        inSector = angle >= startAngle && angle <= endAngle;
+      }
+
+      if (inSector) {
+        final range = scan.ranges[i];
+        if (range > 0.1 && range < 10.0) {
+          if (minDistance == null || range < minDistance) {
+            minDistance = range;
+          }
+        }
+      }
+    }
+
+    return minDistance;
+  }
+
+  // ===========================================================================
+  // VISUAL SEARCH
+  // ===========================================================================
+
+  /// Start a visual search session for a specific target
+  Future<ToolResult> _startSearch(Map<String, dynamic> args) async {
+    debugPrint('🔍 [WorkflowTools] *** start_search TOOL CALLED *** args=$args');
+
+    final target = args['target'] as String?;
+    if (target == null || target.isEmpty) {
+      debugPrint('🔍 [WorkflowTools] ⚠️ No target specified');
+      return ToolResult(
+        success: false,
+        message: 'No search target specified.',
+      );
+    }
+
+    debugPrint('🔍 [WorkflowTools] Target: "$target"');
+
+    // Use planned search service (Nav2 navigation + GPT vision analysis)
+    if (plannedSearchService == null) {
+      debugPrint('🔍 [WorkflowTools] ⚠️ Planned search service not available');
+      return ToolResult(
+        success: false,
+        message: 'Search service not initialized. Try again in a moment.',
+      );
+    }
+
+    // Remember if wander was active (to resume after search)
+    _wanderActiveBeforeSearch = _wanderActive;
+
+    // Pause wander if active - search takes over navigation
+    if (_wanderActive) {
+      debugPrint('🔍 [WorkflowTools] Pausing wander mode for search');
+      rosBridge.deactivateWanderMode();
+      // Brief delay to let wander stop
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    // Try to start the search - it returns an error message if it fails
+    final error = await plannedSearchService!.startSearch(target);
+
+    if (error != null) {
+      debugPrint('🔍 [WorkflowTools] Search failed to start: $error');
+      return ToolResult(
+        success: false,
+        message: 'Could not start search: $error',
+      );
+    }
+
+    debugPrint('🔍 [WorkflowTools] Started planned search for: $target');
+    return ToolResult(
+      success: true,
+      message: 'Search started. I\'m looking for "$target". I\'ll let you know when I find something.',
+      data: {
+        'target': target,
+        'search_active': true,
+      },
+    );
+  }
+
+  /// Get current visual search status
+  ToolResult _getSearchStatus() {
+    if (plannedSearchService == null || !plannedSearchService!.isSearching) {
+      return ToolResult(
+        success: false,
+        message: 'No active search.',
+      );
+    }
+
+    final progress = plannedSearchService!.searchProgress;
+    final buffer = StringBuffer();
+    buffer.writeln('Search target: ${progress['target']}');
+    buffer.writeln('Coverage: ${progress['coverage_percent']}%');
+    buffer.writeln('Observations: ${progress['observations_count']}');
+
+    if (progress['pending_verification'] == true) {
+      buffer.writeln('Status: AWAITING YOUR VERIFICATION');
+    } else if (progress['is_paused'] == true) {
+      buffer.writeln('Status: Paused');
+    } else {
+      buffer.writeln('Status: Searching...');
+    }
+
+    return ToolResult(
+      success: true,
+      message: buffer.toString(),
+      data: progress,
+    );
+  }
+
+  /// End the current visual search session
+  ToolResult _endSearch(Map<String, dynamic> args) {
+    if (plannedSearchService == null || !plannedSearchService!.isSearching) {
+      return ToolResult(
+        success: false,
+        message: 'No active search to end.',
+      );
+    }
+
+    final coverage = plannedSearchService!.coveragePercent;
+    final observations = plannedSearchService!.observations.length;
+
+    plannedSearchService!.stopSearch();
+    debugPrint('🔍 [WorkflowTools] Search stopped by user');
+
+    // Resume wander if it was active before search
+    _resumeWanderIfNeeded();
+
+    return ToolResult(
+      success: true,
+      message: 'Search stopped. Checked ${coverage.toStringAsFixed(0)}% of area with $observations observations.',
+    );
+  }
+
+  /// User confirms the detected object IS the search target
+  ToolResult _confirmSearchTarget() {
+    if (plannedSearchService == null) {
+      return ToolResult(
+        success: false,
+        message: 'Search service not available.',
+      );
+    }
+
+    if (!plannedSearchService!.pendingVerification) {
+      return ToolResult(
+        success: false,
+        message: 'No pending detection to confirm.',
+      );
+    }
+
+    plannedSearchService!.confirmTarget();
+    debugPrint('✅ [WorkflowTools] User confirmed search target');
+
+    // Resume wander if it was active before search
+    _resumeWanderIfNeeded();
+
+    return ToolResult(
+      success: true,
+      message: 'Target confirmed! Search complete.',
+    );
+  }
+
+  /// User rejects the detected object - resume searching
+  ToolResult _rejectSearchTarget() {
+    if (plannedSearchService == null) {
+      return ToolResult(
+        success: false,
+        message: 'Search service not available.',
+      );
+    }
+
+    if (!plannedSearchService!.pendingVerification) {
+      return ToolResult(
+        success: false,
+        message: 'No pending detection to reject.',
+      );
+    }
+
+    plannedSearchService!.rejectTarget();
+    debugPrint('❌ [WorkflowTools] User rejected detection - resuming search');
+
+    return ToolResult(
+      success: true,
+      message: 'Got it, that\'s not it. Continuing to search...',
+    );
+  }
+
+  /// Resume wander mode if it was active before search started
+  void _resumeWanderIfNeeded() {
+    if (_wanderActiveBeforeSearch) {
+      debugPrint('🔍 [WorkflowTools] Resuming wander mode after search');
+      if (onWanderModeStart != null) {
+        onWanderModeStart!();
+      } else {
+        rosBridge.activateWanderMode();
+      }
+      _wanderActiveBeforeSearch = false;
+    }
+  }
+
+  /// Public method to resume wander after search (called by PlannedSearchService callback)
+  void resumeWanderAfterSearch() {
+    _resumeWanderIfNeeded();
+  }
+
   // ===========================================================================
   // QUERIES
   // ===========================================================================
@@ -1182,9 +1986,11 @@ class WorkflowTools {
   }
 
   ToolResult _stopRobot() {
-    rosBridge.publishMove('stop');
-    rosBridge.publishWorkflowCancel();  // Also cancel any navigation
-    debugPrint('🛑 [WorkflowTools] Stop command');
+    // Full stop: disable ALL modes (wander, follow, track), cancel nav, zero velocity
+    rosBridge.deactivateAllModes();  // Stops wander, follow, AND track
+    rosBridge.publishEstop();         // Cancel nav, zero velocity, pause mode
+    rosBridge.publishWorkflowCancel();
+    debugPrint('🛑 [WorkflowTools] Stop command - full stop');
 
     // Clear any stale error state and notify controller
     _workflowState = 'idle';
@@ -1240,47 +2046,6 @@ class WorkflowTools {
   }
 
   // ===========================================================================
-  // PATROL MODE (wander + person detection, auto-engage on detection)
-  // ===========================================================================
-
-  ToolResult _startPatrolMode() {
-    debugPrint('🔍 [WorkflowTools] Starting patrol mode (wander + detection)');
-
-    if (onPatrolModeStart != null) {
-      onPatrolModeStart!();
-    } else {
-      rosBridge.activatePatrolMode();
-    }
-
-    // Speak only if in ready/idle state (not during conversation)
-    onSpeakIfIdle?.call('Patrol mode activated.');
-
-    return ToolResult(
-      success: true,
-      message: 'Patrol mode activated.',
-    );
-  }
-
-  ToolResult _stopPatrolMode() {
-    debugPrint('🛑 [WorkflowTools] Stopping patrol mode');
-
-    // Always disable patrol (wander + follow) directly
-    rosBridge.deactivatePatrolMode();
-
-    // Also notify conversation service if callback is set
-    onPatrolModeStop?.call();
-
-    // Clear any stale error state and notify controller
-    _workflowState = 'idle';
-    rosBridge.publishWorkflowIdle();
-
-    return ToolResult(
-      success: true,
-      message: 'Stopped patrolling.',
-    );
-  }
-
-  // ===========================================================================
   // GO AWAY / COME BACK
   // ===========================================================================
 
@@ -1291,14 +2056,14 @@ class WorkflowTools {
       debugPrint('👋 [WorkflowTools] Saved position: (${_pose!.x}, ${_pose!.y})');
     }
 
-    // Trigger Patrol Mode via callback (wander + person detection)
+    // Trigger Wander Mode via callback
     if (onGoAwayRequested != null) {
-      debugPrint('👋 [WorkflowTools] Go away - triggering patrol mode');
+      debugPrint('👋 [WorkflowTools] Go away - triggering wander mode');
       onGoAwayRequested!();
     } else {
-      // Fallback: activate patrol mode directly
-      rosBridge.activatePatrolMode();
-      debugPrint('👋 [WorkflowTools] Go away - patrol mode enabled (fallback)');
+      // Fallback: activate wander mode directly
+      rosBridge.activateWanderMode();
+      debugPrint('👋 [WorkflowTools] Go away - wander mode enabled (fallback)');
     }
 
     return ToolResult(
@@ -1308,7 +2073,7 @@ class WorkflowTools {
   }
 
   ToolResult _comeBack() {
-    // Deactivate all modes (patrol/wander/follow)
+    // Deactivate all modes (wander/follow)
     rosBridge.deactivateAllModes();
 
     // Clear any stale error state and notify controller
@@ -1626,13 +2391,31 @@ class WorkflowTools {
     // Current mode status
     if (_wanderActive || _followingActive) {
       buffer.writeln('\nCURRENT MODE:');
-      if (_wanderActive && _followingActive) {
-        buffer.writeln('- Patrol mode ACTIVE (wandering + person detection)');
-      } else if (_wanderActive) {
+      if (_wanderActive) {
         buffer.writeln('- Wandering mode ACTIVE');
-      } else if (_followingActive) {
+      }
+      if (_followingActive) {
         buffer.writeln('- Following mode ACTIVE ($_followingStatus)');
       }
+    }
+
+    // Active search status
+    if (plannedSearchService != null && plannedSearchService!.isSearching) {
+      final progress = plannedSearchService!.searchProgress;
+      buffer.writeln('\n🔍 AUTONOMOUS SEARCH ACTIVE:');
+      buffer.writeln('- Target: ${progress['target']}');
+      buffer.writeln('- Coverage: ${progress['coverage_percent']}%');
+      if (progress['pending_verification'] == true) {
+        buffer.writeln('- Status: AWAITING USER VERIFICATION');
+        buffer.writeln('- Ask: "Is this the ${progress['target']}?" and wait for yes/no');
+      } else {
+        buffer.writeln('- Status: Navigating and searching (no action needed)');
+      }
+      buffer.writeln();
+      buffer.writeln('SEARCH RULES:');
+      buffer.writeln('- Robot navigates and searches ON ITS OWN');
+      buffer.writeln('- NEVER say "I can\'t find it" - search continues until done');
+      buffer.writeln('- ONLY call confirm/reject when user says yes/no');
     }
 
     // Waypoints

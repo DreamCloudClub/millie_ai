@@ -10,6 +10,7 @@ import '../services/consciousness_service.dart';
 import '../services/local_memory_service.dart';
 import '../services/reminder_service.dart';
 import '../services/local_cache_service.dart';
+import '../services/planned_search_service.dart';
 import 'settings_page.dart';
 import 'locations_page.dart';
 import 'launch_page.dart';
@@ -48,6 +49,14 @@ class _HomePageState extends State<HomePage> {
 
   // Local memory service
   late LocalMemoryService localMemoryService;
+
+  // Planned search service
+  late PlannedSearchService plannedSearchService;
+
+  // Search state for UI
+  bool _isSearchActive = false;
+  String? _searchTarget;
+  int _searchCoverage = 0;
 
   // Display mode (what's shown on screen)
   DisplayMode _displayMode = DisplayMode.dashboard;
@@ -97,6 +106,11 @@ class _HomePageState extends State<HomePage> {
     conversationService.setConsciousnessService(consciousnessService);
     conversationService.setReminderService(reminderService);
     _setupConversationCallbacks();
+
+    // Initialize planned search service
+    plannedSearchService = PlannedSearchService(rosBridge: rosBridge);
+    conversationService.setPlannedSearchService(plannedSearchService);
+    _setupSearchCallbacks();
     
     // Listen for connection changes
     rosBridge.onConnectionChange = (connected) {
@@ -163,6 +177,10 @@ class _HomePageState extends State<HomePage> {
 
     rosBridge.onPause = () {
       debugPrint('⏸️ Controller requested pause');
+      // Pause search on pause/E-STOP
+      if (plannedSearchService.isSearching && !plannedSearchService.isPaused) {
+        plannedSearchService.pause();
+      }
       if (_displayMode == DisplayMode.face) {
         conversationService.pauseConversation();
         _faceKey.currentState?.setPaused(true);
@@ -190,18 +208,34 @@ class _HomePageState extends State<HomePage> {
     };
 
     rosBridge.onWanderStart = () {
-      debugPrint('🔍 Controller requested patrol mode start');
+      debugPrint('🚶 Controller requested wander mode start');
       // Show face if not already showing
       if (_displayMode != DisplayMode.face) {
         setState(() => _displayMode = DisplayMode.face);
       }
-      // Controller wander button triggers patrol mode (wander + person detection)
-      conversationService.startPatrolMode();
+      // Controller wander button triggers wander mode
+      conversationService.startWander();
     };
 
     rosBridge.onWanderStop = () {
-      debugPrint('🛑 Controller requested patrol mode stop');
-      conversationService.stopPatrolMode();
+      debugPrint('🛑 Controller requested wander mode stop');
+      conversationService.stopWander();
+    };
+
+    // Search commands from controller
+    rosBridge.onSearchStart = () {
+      debugPrint('🔍 Controller requested search start');
+      // Show face if not already showing
+      if (_displayMode != DisplayMode.face) {
+        setState(() => _displayMode = DisplayMode.face);
+      }
+      // Trigger AI to prompt for search target
+      _handleSearchStart();
+    };
+
+    rosBridge.onSearchStop = () {
+      debugPrint('🛑 Controller requested search stop');
+      plannedSearchService.stopSearch();
     };
 
     // Motion detector status - inject prompts in realtime mode
@@ -255,10 +289,11 @@ class _HomePageState extends State<HomePage> {
   Future<void> _initializeConsciousness() async {
     await consciousnessService.initialize();
 
-    // Share API key with consciousness service
+    // Share API key with consciousness service and planned search
     final apiKey = await LocalCacheService.loadOpenAIApiKey();
     if (apiKey != null && apiKey.isNotEmpty) {
       ConsciousnessService.setApiKey(apiKey);
+      PlannedSearchService.setApiKey(apiKey);
     }
 
     if (mounted) {
@@ -273,6 +308,32 @@ class _HomePageState extends State<HomePage> {
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _setupSearchCallbacks() {
+    // NOTE: Most callbacks are set in conversationService.setPlannedSearchService()
+    // We only set onStatusChange here for UI state updates and publishing to controller.
+    // Do NOT set onProgress, onTargetPendingVerification, onTargetConfirmed, onSearchEnd,
+    // or onError here - those are handled by conversation_service for speaking/verification.
+
+    plannedSearchService.onStatusChange = (status) {
+      debugPrint('🔍 [HomePage] Search status changed: $status');
+      // Publish status to controller tablet
+      rosBridge.publishSearchStatus(status);
+      if (mounted) {
+        setState(() {
+          _isSearchActive = status == 'searching' || status == 'paused' || status == 'pending_verification';
+          _searchTarget = plannedSearchService.searchTarget;
+          _searchCoverage = plannedSearchService.coveragePercent.round();
+        });
+      }
+    };
+  }
+
+  /// Handle search start request (from controller or UI button)
+  void _handleSearchStart() {
+    // Inject prompt so AI asks what to search for and uses start_search tool
+    conversationService.injectPrompt('User pressed search button. Ask what they want you to find, then use start_search tool with their answer.');
   }
 
   void _setupConversationCallbacks() {
@@ -309,6 +370,11 @@ class _HomePageState extends State<HomePage> {
           _faceKey.currentState?.setListening(false);
           _faceKey.currentState?.setProcessing(false);
           rosBridge.publishVoicePlaying();
+          // Pause search during conversation
+          if (plannedSearchService.isSearching && !plannedSearchService.isPaused) {
+            debugPrint('🔍 Conversation starting - pausing search');
+            plannedSearchService.pause();
+          }
           break;
         case ConversationState.idle:
         case ConversationState.complete:
@@ -320,6 +386,11 @@ class _HomePageState extends State<HomePage> {
           closeThoughtBubble();
           _orderInProgress = false;
           rosBridge.publishVoiceIdle();
+          // Resume search when conversation ends
+          if (plannedSearchService.isSearching && plannedSearchService.isPaused) {
+            debugPrint('🔍 Conversation ended - resuming search');
+            plannedSearchService.resume();
+          }
           break;
       }
     };
@@ -560,6 +631,7 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     rosBridge.removeWorkflowStatusListener(_handleWorkflowStatus);
     rosBridge.removeAgentListener(_agentListener);
+    plannedSearchService.dispose();
     rosBridge.close();
     super.dispose();
   }
@@ -567,6 +639,11 @@ class _HomePageState extends State<HomePage> {
   void _handleEstop() {
     debugPrint("🔴 E-STOP pressed!");
     rosBridge.publishEstop();
+
+    // Stop planned search
+    if (plannedSearchService.isSearching) {
+      plannedSearchService.stopSearch();
+    }
 
     // Stop conversation and fidget movements
     if (conversationService.isActive) {
@@ -664,6 +741,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _exitToLaunch() async {
+    // Stop search if active
+    if (plannedSearchService.isSearching) {
+      plannedSearchService.stopSearch();
+    }
+
     // Stop AI conversation and clear context
     await conversationService.cancelConversation();
     conversationService.resetTokenTracking();
@@ -704,6 +786,10 @@ class _HomePageState extends State<HomePage> {
         consciousnessService: consciousnessService,
         localMemoryService: localMemoryService,
         reminderService: reminderService,
+        plannedSearchService: plannedSearchService,
+        isSearchActive: _isSearchActive,
+        searchTarget: _searchTarget,
+        searchCoverage: _searchCoverage,
         faceId: _activeFaceId,
         agentName: _activeAgentName,
         voice: _activeVoice,
@@ -714,7 +800,7 @@ class _HomePageState extends State<HomePage> {
           conversationService.pauseConversation();
           _faceKey.currentState?.setPaused(true);
           rosBridge.publishVoicePaused();
-          // Note: Movement modes (wander, follow, patrol) are independent
+          // Note: Movement modes (wander, follow) are independent
           // Use stop_robot voice command or controller buttons to stop movement
         },
         onPlay: () async {

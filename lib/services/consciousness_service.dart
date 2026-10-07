@@ -259,7 +259,7 @@ class ConsciousnessService extends ChangeNotifier {
       buffer.writeln(_state!.lastReflection!.insights);
     }
 
-    buffer.writeln('\nYou should speak first with a single sentence greeting. Do not make suggestions, list options, or explain what you can do.');
+    buffer.writeln('\nWait for the user to speak first. Do not greet or introduce yourself - just listen and respond when spoken to.');
 
     return buffer.toString();
   }
